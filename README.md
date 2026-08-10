@@ -115,7 +115,7 @@ Profiles are session-only: an explicit profile argument enables only those integ
 # One integration
 auvrynt start model      # Blender MCP port detection
 auvrynt start pixel      # Aseprite native CLI/Lua tools
-auvrynt start web        # Playwright/browser tools
+auvrynt start web        # Playwright/browser tools + Agent Reach helpers
 auvrynt start godotcs    # Godot C#
 auvrynt start godotgd    # Godot GDScript
 auvrynt start se         # Serena
@@ -152,6 +152,7 @@ Paste your `/mcp` URL into the connector setup for one of these clients:
 | Grok | `grok.com/connectors` → **New Connector** → **Custom** |
 | Lovable | Lovable MCP connectors |
 | Bolt | Bolt MCP connectors |
+| Clusy | `app.clusy.io` → MCP servers → Streamable HTTP + Bearer header |
 
 Use the public HTTPS URL ending in `/mcp`, not the local dashboard URL:
 
@@ -165,7 +166,15 @@ When the client connects, Auvrynt opens a local approval page that requires your
 auvrynt token
 ```
 
-It is stored locally in `~/.auvrynt/auth.json`. Keep it private and do not paste it into the MCP client itself.
+It is stored locally in `~/.auvrynt/auth.json`. Keep it private.
+
+**Header-only hosts (Clusy and similar):** these clients never open `/authorize`. Put the Owner token in a custom header instead:
+
+```text
+Authorization: Bearer <owner-token-from-auvrynt-token>
+```
+
+Use Streamable HTTP and the public `/mcp` URL. Do not expect a browser approve prompt on Clusy.
 
 Client registrations and hashed authorization sessions are stored locally and survive `auvrynt restart` and `auvrynt change` while the same public origin remains active. You should not need to approve the connector again after either command.
 

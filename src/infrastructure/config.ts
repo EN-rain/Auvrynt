@@ -25,6 +25,7 @@ export const SUPPORTED_SCOPES = [
   "auvrynt:blender-python",
   "auvrynt:aseprite",
   "auvrynt:serena",
+  "auvrynt:roblox",
 ] as const;
 
 export type AuvryntScope = (typeof SUPPORTED_SCOPES)[number];
@@ -44,7 +45,13 @@ export const SCOPE_DESCRIPTIONS: Record<AuvryntScope, string> = {
   "auvrynt:blender-python": "Execute arbitrary Python inside Blender (host-level capability)",
   "auvrynt:aseprite": "Use workspace-bound Aseprite pixel-art and animation tools",
   "auvrynt:serena": "Use local Serena semantic code tools",
+  "auvrynt:roblox": "Use official Roblox Studio MCP tools",
 };
+
+export interface ObsidianServerConfig {
+  enabled: boolean;
+  vaultPath?: string;
+}
 
 export interface SerenaServerConfig {
   enabled: boolean;
@@ -82,12 +89,14 @@ export interface ServerConfig {
   agentDir: string;
   logging: LoggingConfig;
   serena: SerenaServerConfig;
+  obsidian: ObsidianServerConfig;
   executables: AuvryntExecutablesConfig;
   integrations: Required<AuvryntIntegrationsConfig>;
   tunnelProvider: TunnelProviderSetting;
   cloudflareTunnelToken?: string;
   ngrokAuthtoken?: string;
   ngrokUrl?: string;
+  toolToggles: Record<string, boolean>;
 }
 
 function parsePort(value: string | number | undefined): number {
@@ -306,6 +315,7 @@ export function oauthScopesForIntegrations(integrations: AuvryntIntegrationsConf
   if (integrations.blender) scopes.push("auvrynt:blender");
   if (integrations.aseprite) scopes.push("auvrynt:aseprite");
   if (integrations.serena) scopes.push("auvrynt:serena");
+  if (integrations.roblox) scopes.push("auvrynt:roblox");
   return Array.from(new Set(scopes));
 }
 
@@ -344,6 +354,9 @@ function parseOAuthConfig(
       "lovable.dev",
       "api.lovable.dev",
       "bolt.new",
+      "clusy.io",
+      "app.clusy.io",
+      "docs.clusy.io",
       "localhost",
       "127.0.0.1",
     ]),
@@ -360,6 +373,15 @@ function defaultWorktreeRoot(): string {
 
 function defaultAgentDir(): string {
   return join(homedir(), ".codex");
+}
+
+function parseObsidianConfig(env: NodeJS.ProcessEnv, filesConfig: AuvryntUserConfig): ObsidianServerConfig {
+  const file = filesConfig.obsidian ?? {};
+  const vaultPath = (env.AUVRYNT_OBSIDIAN_VAULT ?? file.vaultPath)?.trim();
+  return {
+    enabled: parseOptionalIntegrationBoolean(env.AUVRYNT_OBSIDIAN_ENABLED, "AUVRYNT_OBSIDIAN_ENABLED") ?? file.enabled ?? false,
+    vaultPath: vaultPath ? expandHomePath(vaultPath) : undefined,
+  };
 }
 
 function parseSerenaConfig(env: NodeJS.ProcessEnv, filesConfig: AuvryntUserConfig): SerenaServerConfig {
@@ -424,6 +446,9 @@ function parseIntegrationsConfig(env: NodeJS.ProcessEnv, filesConfig: AuvryntUse
       "AUVRYNT_SERENA_INTEGRATION_ENABLED",
     ) ?? configIntegrations.serena ?? filesConfig.serena?.enabled ?? false,
     playwright: parseOptionalIntegrationBoolean(env.AUVRYNT_PLAYWRIGHT_ENABLED, "AUVRYNT_PLAYWRIGHT_ENABLED") ?? configIntegrations.playwright ?? false,
+    context7: parseOptionalIntegrationBoolean(env.AUVRYNT_CONTEXT7_ENABLED, "AUVRYNT_CONTEXT7_ENABLED") ?? configIntegrations.context7 ?? false,
+    obsidian: parseOptionalIntegrationBoolean(env.AUVRYNT_OBSIDIAN_ENABLED, "AUVRYNT_OBSIDIAN_ENABLED") ?? configIntegrations.obsidian ?? filesConfig.obsidian?.enabled ?? false,
+    roblox: parseOptionalIntegrationBoolean(env.AUVRYNT_ROBLOX_ENABLED, "AUVRYNT_ROBLOX_ENABLED") ?? configIntegrations.roblox ?? false,
   };
 }
 
@@ -476,12 +501,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     agentDir: resolve(expandHomePath(env.AUVRYNT_AGENT_DIR ?? files.config.agentDir ?? defaultAgentDir())),
     logging: parseLoggingConfig(env),
     serena: parseSerenaConfig(env, files.config),
+    obsidian: parseObsidianConfig(env, files.config),
     executables: parseExecutablesConfig(env, files.config),
     integrations,
     tunnelProvider: parseTunnelProvider(env.AUVRYNT_TUNNEL_PROVIDER, files.config.tunnelProvider),
     cloudflareTunnelToken: env.AUVRYNT_CLOUDFLARE_TUNNEL_TOKEN?.trim() || files.auth.cloudflareTunnelToken,
     ngrokAuthtoken: resolveNgrokAuthtoken(files, env),
     ngrokUrl: normalizeNgrokUrl(env.AUVRYNT_NGROK_URL ?? files.config.ngrokUrl),
+    toolToggles: files.config.toolToggles ?? {},
   };
 }
 

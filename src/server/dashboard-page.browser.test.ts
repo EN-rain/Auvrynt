@@ -38,12 +38,33 @@ const view: DashboardView = {
     sampledAt: new Date(now - 3_000).toISOString(),
   },
   integrations: [
-    { key: "serena", label: "Serena", enabled: true, state: "connected", detail: "Serena is running." },
-    { key: "playwright", label: "Playwright", enabled: true, state: "available", detail: "Chromium is installed and starts on demand." },
-    { key: "blender", label: "Blender", enabled: false, state: "disabled", detail: "Not included in the active profile." },
-    { key: "godotCsharp", label: "Godot C#", enabled: false, state: "disabled", detail: "Not included in the active profile." },
-    { key: "godotGdscript", label: "Godot GDScript", enabled: false, state: "disabled", detail: "Not included in the active profile." },
+    { key: "serena", label: "Serena", enabled: true, state: "connected", detail: "Serena is running.", toolCount: 42, toolEnabledCount: 42 },
+    { key: "playwright", label: "Playwright", enabled: true, state: "available", detail: "Chromium is installed and starts on demand.", toolCount: 3, toolEnabledCount: 3 },
+    { key: "blender", label: "Blender", enabled: false, state: "disabled", detail: "Not included in the active profile.", toolCount: 801, toolEnabledCount: 0 },
+    { key: "godotCsharp", label: "Godot C#", enabled: false, state: "disabled", detail: "Not included in the active profile.", toolCount: 0, toolEnabledCount: 0 },
+    { key: "godotGdscript", label: "Godot GDScript", enabled: false, state: "disabled", detail: "Not included in the active profile.", toolCount: 0, toolEnabledCount: 0 },
   ],
+  skills: {
+    enabled: true,
+    agentDir: "~/.auvrynt",
+    skillPaths: [],
+    workspaceRoot: "C:\Users\LENOVO\Desktop\Projectsss\Moonless",
+    skills: [
+      {
+        name: "example-skill",
+        description: "Example skill for dashboard tests.",
+        path: "~/.auvrynt/skills/example-skill/SKILL.md",
+        baseDir: "~/.auvrynt/skills/example-skill",
+        scope: "user",
+        source: "agent",
+        origin: "top-level",
+        disableModelInvocation: false,
+        agentAccess: "Exposed on open_workspace as an available skill; agents should read the SKILL.md path before using it.",
+      },
+    ],
+    diagnostics: [],
+  },
+  context7: { configured: false, environmentOverride: false },
   ngrok: {
     provider: "ngrok",
     enabled: true,
@@ -86,6 +107,7 @@ let workspacePickerRequests = 0;
 let sessionLimitRequests = 0;
 let sessionIdleTimeoutRequests = 0;
 let ngrokTokenRequests = 0;
+let toolToggleRequests = 0;
 let selectedWorkspacePath: string | undefined;
 
 const server = createServer(async (request, response) => {
@@ -162,6 +184,51 @@ const server = createServer(async (request, response) => {
   if (request.method === "POST" && url.pathname === "/__auvrynt/dashboard/integrations") {
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ message: "Integration updated." }));
+    return;
+  }
+  if (url.pathname === "/dashboard/tools") {
+    const integration = url.searchParams.get("integration") ?? "";
+    if (integration === "blender") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        integration,
+        counts: { blender: { total: 801, enabled: 800 }, serena: { total: 42, enabled: 42 }, playwright: { total: 3, enabled: 3 } },
+        tools: [
+          { name: "blender_create_cube", title: "Create Cube", group: "Model", enabled: true },
+          { name: "blender_knife_cut", title: "Knife Cut", group: "Model", enabled: true },
+          { name: "blender_set_keyframe", title: "Set Keyframe", group: "Animation", enabled: false },
+        ],
+      }));
+      return;
+    }
+    if (integration === "serena") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        integration,
+        counts: { serena: { total: 42, enabled: 42 } },
+        tools: [
+          { name: "serena_find_symbol", title: "Find Symbol", group: "Code", enabled: true },
+          { name: "serena_find_referencing_symbols", title: "Find Referencing Symbols", group: "Code", enabled: true },
+          { name: "serena_start_session", title: "Start Session", group: "Sessions", enabled: true },
+        ],
+      }));
+      return;
+    }
+    response.writeHead(404, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: "Unknown integration." }));
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/__auvrynt/dashboard/tools") {
+    toolToggleRequests++;
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { name?: string; enabled?: boolean; group?: string; groupEnabled?: boolean };
+    response.writeHead(200, { "content-type": "application/json" });
+    if (body.name) {
+      response.end(JSON.stringify({ message: `${body.name} ${body.enabled ? "enabled" : "disabled"}.`, toolToggles: { [body.name]: body.enabled } }));
+    } else {
+      response.end(JSON.stringify({ message: `Group ${body.group} ${body.groupEnabled ? "enabled" : "disabled"}.`, toolToggles: {} }));
+    }
     return;
   }
   if (url.pathname === "/dashboard" || url.pathname === "/") {
@@ -256,6 +323,50 @@ try {
     assert.equal(await page.locator("#session-limit-input").getAttribute("type"), "text");
     assert.equal(await page.locator("#session-limit-input").evaluate((element: HTMLElement) => getComputedStyle(element).borderTopWidth), "0px");
     assert.equal(await page.locator("#save-session-limit svg").count(), 1);
+
+    const countBadges = await page.locator(".integration-row .tool-count strong").allTextContents();
+    assert.deepEqual(countBadges, ["42", "3", "0"], `${viewport.name}: integration tool count badges only for integrations with >0 tools`);
+    const serenaRow = page.locator(".integration-row").filter({ hasText: "Serena" });
+    assert.equal(await serenaRow.locator(".tool-count").getAttribute("title"), "42 of 42 tools enabled");
+    assert.equal(await page.locator("[data-tools-integration]").count(), 0, `${viewport.name}: per-row gear icons are removed`);
+    assert.equal(await page.locator("#open-tool-settings").count(), 1, `${viewport.name}: single header gear for tool settings`);
+    const blenderRow = page.locator(".integration-row").filter({ hasText: "Blender" });
+    assert.equal(await blenderRow.locator(".tool-count").getAttribute("title"), "0 of 801 tools enabled");
+
+    await page.locator("#open-tool-settings").click();
+    assert.equal(await page.locator("#page-title").textContent(), "Tool settings");
+    assert.equal(await page.locator("#view-tools").isVisible(), true);
+    await page.waitForFunction(() => document.querySelector("#tools-layout")?.querySelector(".tools-group"));
+    assert.equal(await page.locator("[data-tools-tab]").count(), 3, `${viewport.name}: tabs for integrations that have tools`);
+    assert.equal(await page.locator("[data-tools-tab='memory']").getAttribute("class"), "tools-tab active");
+    assert.equal(await page.locator("[data-tools-sub='serena']").getAttribute("class"), "tools-tab active");
+    assert.equal(await page.locator(".tools-summary").textContent(), "3 of 3 tools enabled");
+    assert.equal(await page.locator(".tools-group").count(), 2, `${viewport.name}: groups rendered from classifier data`);
+    assert.equal(await page.locator("[data-tool-name='serena_find_symbol']").isChecked(), true);
+
+    await page.locator("[data-tool-name='serena_find_symbol']").evaluate((element: HTMLInputElement) => {
+      element.checked = false;
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await page.waitForFunction(() => document.querySelector(".tools-summary")?.textContent === "2 of 3 tools enabled");
+    assert.ok(toolToggleRequests >= 1, `${viewport.name}: per-tool POST was issued`);
+
+    await page.locator("[data-tools-group='Code']").evaluate((element: HTMLInputElement) => {
+      element.checked = true;
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await page.waitForFunction(() => document.querySelector(".tools-summary")?.textContent === "3 of 3 tools enabled");
+
+    await page.locator("#tools-search").fill("session");
+    assert.equal(await page.locator(".tools-group").count(), 1, `${viewport.name}: search narrows to matching group`);
+    assert.equal(await page.locator(".tools-group[open]").count(), 1, `${viewport.name}: matching batch auto-expands while searching`);
+    assert.equal(await page.locator(".tool-row").count(), 1, `${viewport.name}: search narrows to matching tool`);
+    await page.locator("#tools-search").fill("");
+
+    await page.locator("[data-tools-tab='playwright']").click();
+    await page.waitForFunction(() => document.querySelector("#tools-layout")?.textContent?.includes("Unable to load tools"));
+    assert.match(await page.locator("#tools-layout").textContent() ?? "", /Unable to load tools/i, `${viewport.name}: missing tools data surfaces an error message`);
+
 
     await page.locator("#tab-logs").click();
     assert.equal(await page.locator("#page-title").textContent(), "Logs");

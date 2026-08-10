@@ -133,6 +133,22 @@ For a URL that survives tunnel restarts, configure a reserved ngrok URL with
 `auvrynt tunnel` before creating the Grok connector. Cloudflare quick-tunnel
 URLs are temporary and must be replaced in Grok when they change.
 
+## Connect Clusy (header auth)
+
+Clusy cloud MCP only supports **Streamable HTTP** and **custom headers**. It does
+not open Auvrynt’s `/authorize` page.
+
+1. Start Auvrynt and copy the public URL ending in `/mcp` from `auvrynt status`.
+2. Run `auvrynt token` and copy the Owner token (keep it private).
+3. In Clusy → **Settings → MCP servers** → Add server:
+   - Transport: **Streamable HTTP** (not STDIO)
+   - URL: `https://your-public-host/mcp`
+   - Custom header name: `Authorization`
+   - Custom header value: `Bearer <owner-token>`
+4. Save, then approve individual tools in Clusy when prompted.
+
+Rebuild/restart Auvrynt after upgrading so Owner-Bearer verification is active.
+
 ## Check Your Setup
 
 Run:

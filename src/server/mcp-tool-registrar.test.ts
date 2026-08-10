@@ -13,6 +13,7 @@ import {
   registerAppTool,
   syncMcpToolAvailability,
 } from "./mcp-tool-registrar.js";
+import { groupForTool, groupToolsByName } from "./tool-groups.js";
 
 const root = await mkdtemp(join(tmpdir(), "auvrynt-tool-guard-"));
 try {
@@ -78,6 +79,31 @@ try {
   config.serena.enabled = true;
   assert.deepEqual(syncMcpToolAvailability(server, config), { enabled: 1, disabled: 0 });
   assert.equal((serenaTool as any).enabled, true);
+
+  config.toolToggles["blender_create_cube"] = false;
+  config.integrations.blender = true;
+  const blenderTool = registerAppTool(server, "blender_create_cube", {
+    inputSchema: { workspaceId: z.string() },
+    _meta: {},
+  }, async () => ({ content: [{ type: "text", text: "cube" }] }));
+  assert.ok(blenderTool);
+  assert.equal((blenderTool as any).enabled, false, "toolToggles=false must hide the tool even when the integration is enabled");
+  delete config.toolToggles["blender_create_cube"];
+  assert.deepEqual(syncMcpToolAvailability(server, config), { enabled: 1, disabled: 0 });
+  assert.equal((blenderTool as any).enabled, true, "removing the toggle must restore the tool");
+
+  assert.equal(groupForTool("blender_add_cube"), "Model");
+  assert.equal(groupForTool("blender_set_keyframe"), "Animation");
+  assert.equal(groupForTool("blender_setup_principled_material"), "Materials & Shading");
+  assert.equal(groupForTool("blender_viewport_orbit"), "Viewport & Camera");
+  assert.equal(groupForTool("blender_render_image"), "Rendering");
+  assert.equal(groupForTool("blender_export_glb"), "Export & Import");
+  assert.equal(groupForTool("blender_select_all"), "Selection");
+  assert.equal(groupForTool("blender_ping"), "Utilities");
+  assert.equal(groupForTool("blender_unknown_op"), "Other");
+  const grouped = groupToolsByName(["blender_add_cube", "blender_knife_cut", "blender_add_uv_sphere"]);
+  assert.deepEqual([...grouped.keys()], ["Model"]);
+  assert.equal(grouped.get("Model")!.length, 3);
 } finally {
   await rm(root, { recursive: true, force: true });
 }

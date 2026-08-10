@@ -16,6 +16,9 @@ export function completeIntegrationsConfig(
     aseprite: config?.aseprite ?? false,
     serena: config?.serena ?? false,
     playwright: config?.playwright ?? false,
+    context7: config?.context7 ?? false,
+    obsidian: config?.obsidian ?? false,
+    roblox: config?.roblox ?? false,
   };
 }
 

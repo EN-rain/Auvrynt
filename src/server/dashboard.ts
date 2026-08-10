@@ -3,14 +3,22 @@ import {
   summarizeNgrokAuthtokens,
   type NgrokAuthtokenPoolSummary,
 } from "../infrastructure/ngrok-auth-pool.js";
+import {
+  summarizeContext7Auth,
+  type Context7AuthSummary,
+} from "../infrastructure/context7-auth.js";
 import { readConnectedClients } from "../connection-registry.js";
 import { discoverLocalIntegrations, processDetected } from "../integration-discovery.js";
 import type { RecentLogEntry } from "../infrastructure/logger.js";
 import { recentLogEntries } from "../infrastructure/logger.js";
 import { getPlaywrightRuntimeStatus } from "../playwright-runtime.js";
 import { getAsepriteBridgeRuntimeStatus } from "../integrations/aseprite/aseprite-live-tools.js";
+import { integrationToolCounts, registeredToolNamesForIntegration } from "./mcp-tool-registrar.js";
+import { toolIntegrationEnabled } from "./mcp-policy.js";
+import { groupToolsByName } from "./tool-groups.js";
 import { dashboardHtml } from "./dashboard-page.js";
 import type { WorkspaceChangeAnalytics } from "./workspace-analytics.js";
+import { formatPathForPrompt, loadWorkspaceSkills } from "../workspace/skills.js";
 
 export { dashboardHtml };
 
@@ -34,6 +42,29 @@ export interface DashboardIntegration {
   enabled: boolean;
   state: "connected" | "available" | "offline" | "disabled";
   detail: string;
+  toolCount: number;
+  toolEnabledCount: number;
+}
+
+export interface DashboardSkillEntry {
+  name: string;
+  description: string;
+  path: string;
+  baseDir: string;
+  scope: "user" | "project" | "temporary";
+  source: string;
+  origin: "package" | "top-level";
+  disableModelInvocation: boolean;
+  agentAccess: string;
+}
+
+export interface DashboardSkillsState {
+  enabled: boolean;
+  agentDir: string;
+  skillPaths: string[];
+  workspaceRoot?: string;
+  skills: DashboardSkillEntry[];
+  diagnostics: Array<{ type?: string; message: string; path?: string }>;
 }
 
 export interface DashboardView {
@@ -55,7 +86,9 @@ export interface DashboardView {
   runningProcesses: number;
   workspaceChanges: WorkspaceChangeAnalytics;
   integrations: DashboardIntegration[];
+  skills: DashboardSkillsState;
   ngrok: DashboardNgrokState;
+  context7: Context7AuthSummary;
   logs: RecentLogEntry[];
 }
 
@@ -75,6 +108,9 @@ const INTEGRATION_LABELS: Record<DashboardIntegrationKey, string> = {
   aseprite: "Aseprite",
   serena: "Serena",
   playwright: "Playwright",
+  context7: "Context7",
+  obsidian: "Obsidian",
+  roblox: "Roblox Studio",
 };
 
 export async function createDashboardView(
@@ -91,6 +127,9 @@ export async function createDashboardView(
     availableDetail: string,
     offlineDetail: string,
   ): DashboardIntegration => {
+    const counts = integrationToolCounts(config);
+    const toolCount = counts[key]?.total ?? 0;
+    const toolEnabledCount = counts[key]?.enabled ?? 0;
     const enabled = config.integrations[key];
     if (!enabled) {
       return {
@@ -99,15 +138,17 @@ export async function createDashboardView(
         enabled,
         state: "disabled",
         detail: "Not included in the active profile.",
+        toolCount,
+        toolEnabledCount,
       };
     }
     if (connected) {
-      return { key, label: INTEGRATION_LABELS[key], enabled, state: "connected", detail: connectedDetail };
+      return { key, label: INTEGRATION_LABELS[key], enabled, state: "connected", detail: connectedDetail, toolCount, toolEnabledCount };
     }
     if (available) {
-      return { key, label: INTEGRATION_LABELS[key], enabled, state: "available", detail: availableDetail };
+      return { key, label: INTEGRATION_LABELS[key], enabled, state: "available", detail: availableDetail, toolCount, toolEnabledCount };
     }
-    return { key, label: INTEGRATION_LABELS[key], enabled, state: "offline", detail: offlineDetail };
+    return { key, label: INTEGRATION_LABELS[key], enabled, state: "offline", detail: offlineDetail, toolCount, toolEnabledCount };
   };
 
   const godotConnected = Boolean(discovered?.ports.auvrynt_godot_bridge);
@@ -142,6 +183,7 @@ export async function createDashboardView(
   const logs = recentLogEntries(250).reverse();
   const ngrokSummary = summarizeNgrokAuthtokens();
   const ngrokNotice = createNgrokNotice(config, ngrokSummary, logs);
+  const context7 = summarizeContext7Auth();
   const agentState: DashboardAgentState = !runtime.ready
     ? "stopping"
     : runtime.activeToolCalls > 0
@@ -219,12 +261,38 @@ export async function createDashboardView(
         "Chromium is installed and starts on demand.",
         "Playwright Chromium is unavailable.",
       ),
+      integration(
+        "context7",
+        false,
+        true,
+        "Context7 API is ready.",
+        "Context7 docs tools use the API key from Secrets.",
+        "Add a Context7 API key in Secrets.",
+      ),
+      integration(
+        "obsidian",
+        false,
+        true,
+        "Obsidian vault is configured.",
+        "Point AUVRYNT_OBSIDIAN_VAULT at your vault folder.",
+        "Configure an Obsidian vault path to enable note tools.",
+      ),
+      integration(
+        "roblox",
+        Boolean(discovered && processDetected(discovered, "roblox")),
+        true,
+        "Roblox Studio process detected.",
+        "Official Studio MCP launcher is available for roblox_* tools.",
+        "Install Studio, enable MCP in Assistant settings, then start with auvrynt start roblox.",
+      ),
     ],
+    skills: buildDashboardSkills(config),
     ngrok: {
       ...ngrokSummary,
       provider: config.tunnelProvider,
       ...(ngrokNotice ? { notice: ngrokNotice } : {}),
     },
+    context7,
     logs,
   };
 }
@@ -268,8 +336,45 @@ function createNgrokNotice(
   };
 }
 
-export function dashboardCsp(nonce: string): string {
-  return [
+export interface DashboardToolEntry {
+  name: string;
+  title: string;
+  group: string;
+  enabled: boolean;
+}
+
+export function createDashboardToolsView(
+  config: ServerConfig,
+  integration: DashboardIntegrationKey,
+): DashboardToolEntry[] | undefined {
+  const names = registeredToolNamesForIntegration(integration);
+  if (names.length === 0 && !config.integrations[integration]) return undefined;
+  const groups = groupToolsByName(names);
+  const entries: DashboardToolEntry[] = [];
+  for (const [group, toolNames] of groups) {
+    for (const name of toolNames) {
+      entries.push({
+        name,
+        title: toolTitle(name),
+        group,
+        enabled: toolIntegrationEnabled(config, name),
+      });
+    }
+  }
+  entries.sort((a, b) => a.name.localeCompare(b.name));
+  return entries;
+}
+
+function toolTitle(name: string): string {
+  return name
+    .replace(/^blender_|^aseprite_|^godot_|^serena_|^context7_|^obsidian_/, "")
+    .split("_")
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+export function dashboardCsp(nonce: string): string {  return [
     "default-src 'none'",
     `style-src 'nonce-${nonce}'`,
     `script-src 'nonce-${nonce}'`,
@@ -287,4 +392,36 @@ function localHttpUrl(host: string, port: number, path: string): string {
     ? `[${probeHost}]`
     : probeHost;
   return `http://${formattedHost}:${port}${path}`;
+}
+
+function buildDashboardSkills(config: ServerConfig): DashboardSkillsState {
+  const workspaceRoot = config.allowedRoots[0];
+  const cwd = workspaceRoot ?? config.agentDir;
+  const loaded = loadWorkspaceSkills(config, cwd);
+  return {
+    enabled: config.skillsEnabled,
+    agentDir: formatPathForPrompt(config.agentDir),
+    skillPaths: config.skillPaths.map((path) => formatPathForPrompt(path)),
+    ...(workspaceRoot ? { workspaceRoot: formatPathForPrompt(workspaceRoot) } : {}),
+    skills: loaded.skills.map((skill) => ({
+      name: skill.name,
+      description: skill.description,
+      path: formatPathForPrompt(skill.filePath),
+      baseDir: formatPathForPrompt(skill.baseDir),
+      scope: skill.sourceInfo.scope,
+      source: skill.sourceInfo.source,
+      origin: skill.sourceInfo.origin,
+      disableModelInvocation: skill.disableModelInvocation,
+      agentAccess: skill.disableModelInvocation
+        ? "Listed for agents, but model auto-invocation is disabled (manual /skill use only)."
+        : "Exposed on open_workspace as an available skill; agents should read the SKILL.md path before using it.",
+    })),
+    diagnostics: loaded.diagnostics.map((diag) => ({
+      type: typeof (diag as { type?: unknown }).type === "string" ? (diag as { type: string }).type : undefined,
+      message: String((diag as { message?: unknown }).message ?? diag),
+      path: typeof (diag as { path?: unknown }).path === "string"
+        ? formatPathForPrompt((diag as { path: string }).path)
+        : undefined,
+    })),
+  };
 }

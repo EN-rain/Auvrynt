@@ -42,6 +42,15 @@ created on demand and are not persistent connections.
 - `capture_page_screenshot`: Playwright browser screenshot saved inside workspace and returned as MCP image content.
 - `inspect_page`: Extract structured page title, headings, buttons, links, landmarks, console errors, and failed requests.
 
+### Phase 3b: Agent Reach (external internet platforms)
+Requires the **web / Playwright** integration profile (`auvrynt start web`). Wraps the open-source [Agent Reach](https://github.com/Panniantong/Agent-Reach) CLI for free platform read/search (Twitter/X, Reddit, YouTube, GitHub, Bilibili, XiaoHongShu, RSS, web search, and more).
+
+- `agent_reach_status`: Detect whether `agent-reach` is on PATH (and version when available).
+- `agent_reach_doctor`: Run `agent-reach doctor` / `doctor --json` for channel health.
+- `agent_reach_guide`: Install/update URLs and platform notes without executing the CLI.
+
+Agent Reach is an installer + health-checker + router. After setup, agents call upstream tools (`yt-dlp`, `gh`, `twitter`, `opencli`, …) directly. Cookies remain on the local machine.
+
 ### Phase 4: Image and Screenshot Inspection
 - `inspect_image`: Inspect dimensions, format, MIME type, alpha, and color palette.
 - `compare_images`: RGBA pixel-by-pixel image comparison returning match %, changed pixels, and optional diff PNG output.
@@ -89,6 +98,15 @@ Destructive source edits accept `expectedVersion` and `checkpoint`. Use the SHA-
 4. capture_page_screenshot(workspaceId, url="http://localhost:3000", outputPath="screenshots/home.png")
 5. inspect_page(workspaceId, url="http://localhost:3000")
 6. stop_process(workspaceId, processId)
+```
+
+### External platform research (Agent Reach)
+```text
+1. Enable web profile: auvrynt start web
+2. agent_reach_status
+3. If missing → agent_reach_guide → user installs from GitHub install.md
+4. agent_reach_doctor (json optional)
+5. Use upstream CLIs via bash for the specific platform task
 ```
 
 ### .NET Workflow

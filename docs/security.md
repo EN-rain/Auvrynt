@@ -6,7 +6,7 @@ to your development machine.
 The security model is simple:
 
 - you choose a narrow filesystem allowlist
-- the MCP endpoint requires OAuth approval with your Owner token
+- the MCP endpoint requires OAuth approval with your Owner token (or Owner token as `Authorization: Bearer` for header-only clients such as Clusy)
 - OAuth scopes are enforced per tool call
 - workspace rooms are owned by the OAuth client that opened them
 - Host headers are allowlisted from the configured public URL

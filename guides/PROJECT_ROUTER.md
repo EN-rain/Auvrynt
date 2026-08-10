@@ -4,7 +4,7 @@
 
 Read this file first before any development work. Detect the active project or subproject, then load **only** the relevant guide. Do not load all guides by default.
 
-Available guides: `WEB_AGENT_GUIDE.md`, `SOFTWARE_AGENT_GUIDE.md`, `GODOT_AGENT_GUIDE.md`, `BLENDER_AGENT_GUIDE.md`, `ASEPRITE_AGENT_GUIDE.md` (all in this `guides/` directory).
+Available guides: `WEB_AGENT_GUIDE.md`, `SOFTWARE_AGENT_GUIDE.md`, `GODOT_AGENT_GUIDE.md`, `BLENDER_AGENT_GUIDE.md`, `ASEPRITE_AGENT_GUIDE.md`, `ROBLOX_AGENT_GUIDE.md` (all in this `guides/` directory).
 
 ---
 

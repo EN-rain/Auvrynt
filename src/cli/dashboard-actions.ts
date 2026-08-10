@@ -20,6 +20,10 @@ import {
   addNgrokAuthtoken,
   removeNgrokAuthtoken,
 } from "../infrastructure/ngrok-auth-pool.js";
+import {
+  clearContext7ApiKey,
+  setContext7ApiKey,
+} from "../infrastructure/context7-auth.js";
 import { isLoopbackRequest, logEvent } from "../logger.js";
 import type { RunningServer } from "../server.js";
 import { loadAuvryntFiles, writeAuvryntConfig } from "../user-config.js";
@@ -27,6 +31,8 @@ import { selfHealStartIntegrations } from "./integration-bootstrap.js";
 import { applyIntegrationProfile } from "./lifecycle-manager.js";
 import { httpUrl } from "./runtime-support.js";
 import { selectNativeWorkspaceFolder } from "./dashboard-native-actions.js";
+import { groupToolsByName } from "../server/tool-groups.js";
+import { registeredToolNamesForIntegration } from "../server/mcp-tool-registrar.js";
 
 export interface DashboardActionDependencies {
   runningServer: RunningServer;
@@ -166,6 +172,75 @@ export function registerDashboardActions({
     }
   });
 
+  app.post("/__auvrynt/dashboard/tools", async (req, res) => {
+    if (rejectUnauthorized(req, res) || rejectRateLimited(res)) return;
+    const body = req.body as { integration?: unknown; name?: unknown; enabled?: unknown; group?: unknown; groupEnabled?: unknown };
+    if (typeof body.integration !== "string" || !INTEGRATION_KEYS.includes(body.integration as IntegrationKey)) {
+      res.status(400).json({ error: "Invalid integration update." });
+      return;
+    }
+    if (typeof body.name === "string") {
+      if (typeof body.enabled !== "boolean") {
+        res.status(400).json({ error: "A tool toggle needs an enabled boolean." });
+        return;
+      }
+      const toggles = { ...config.toolToggles };
+      if (body.enabled) delete toggles[body.name];
+      else toggles[body.name] = false;
+      config.toolToggles = toggles;
+      try {
+        const files = loadAuvryntFiles();
+        writeAuvryntConfig({ ...files.config, toolToggles: toggles });
+        runningServer.refreshToolAvailability();
+        logEvent(config.logging, "info", "dashboard_tool_toggled", {
+          integration: body.integration,
+          tool: body.name,
+          enabled: body.enabled,
+        });
+        res.json({ message: `${body.name} ${body.enabled ? "enabled" : "disabled"}.`, toolToggles: toggles });
+      } catch (error) {
+        config.toolToggles = toggles;
+        const message = error instanceof Error ? error.message : String(error);
+        logEvent(config.logging, "error", "dashboard_tool_toggle_failed", {
+          tool: body.name,
+          error: message,
+        });
+        res.status(500).json({ error: message });
+      }
+      return;
+    }
+    if (typeof body.group === "string" && typeof body.groupEnabled === "boolean") {
+      const toggles = { ...config.toolToggles };
+      const grouped = groupToolsByName(registeredToolNamesForIntegration(body.integration));
+      for (const name of grouped.get(body.group) ?? []) {
+        if (body.groupEnabled) delete toggles[name];
+        else toggles[name] = false;
+      }
+      config.toolToggles = toggles;
+      try {
+        const files = loadAuvryntFiles();
+        writeAuvryntConfig({ ...files.config, toolToggles: toggles });
+        runningServer.refreshToolAvailability();
+        logEvent(config.logging, "info", "dashboard_tool_group_toggled", {
+          integration: body.integration,
+          group: body.group,
+          enabled: body.groupEnabled,
+        });
+        res.json({ message: `Group ${body.group} ${body.groupEnabled ? "enabled" : "disabled"}.`, toolToggles: toggles });
+      } catch (error) {
+        config.toolToggles = toggles;
+        const message = error instanceof Error ? error.message : String(error);
+        logEvent(config.logging, "error", "dashboard_tool_group_toggle_failed", {
+          group: body.group,
+          error: message,
+        });
+        res.status(500).json({ error: message });
+      }
+      return;
+    }
+    res.status(400).json({ error: "Provide a tool name or a group to update." });
+  });
+
   app.post("/__auvrynt/dashboard/ngrok-tokens", async (req, res) => {
     if (rejectUnauthorized(req, res) || rejectRateLimited(res)) return;
     const body = req.body as { action?: unknown; token?: unknown; index?: unknown };
@@ -205,6 +280,38 @@ export function registerDashboardActions({
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logEvent(config.logging, "warn", "dashboard_ngrok_token_update_failed", {
+        action: body.action,
+        error: message,
+      });
+      res.status(400).json({ error: message });
+    }
+  });
+
+  app.post("/__auvrynt/dashboard/context7-key", async (req, res) => {
+    if (rejectUnauthorized(req, res) || rejectRateLimited(res)) return;
+    const body = req.body as { action?: unknown; apiKey?: unknown };
+    if (body.action !== "set" && body.action !== "clear") {
+      res.status(400).json({ error: "Invalid Context7 key action." });
+      return;
+    }
+    try {
+      const result = body.action === "set"
+        ? setContext7ApiKey(body.apiKey)
+        : clearContext7ApiKey();
+      logEvent(config.logging, "info", "dashboard_context7_key_updated", {
+        action: body.action,
+        configured: result.summary.configured,
+        fingerprint: result.summary.fingerprint,
+      });
+      res.status(200).json({
+        context7: result.summary,
+        message: body.action === "set"
+          ? "Context7 API key saved locally."
+          : "Context7 API key removed."
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logEvent(config.logging, "warn", "dashboard_context7_key_update_failed", {
         action: body.action,
         error: message,
       });

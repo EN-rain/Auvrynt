@@ -53,6 +53,13 @@ Do not apply this to Godot projects, desktop applications, CLI tools, or pure ba
 **Build and validation**
 - package-manager scripts (lint, type-check, test, build)
 
+**External internet research (Agent Reach — web profile)**
+- `agent_reach_status` — detect local Agent Reach CLI
+- `agent_reach_doctor` — channel health (`agent-reach doctor`)
+- `agent_reach_guide` — install/update URLs and platform list
+- Upstream CLIs after install: `yt-dlp`, `gh`, `twitter`, `opencli`, `bili`, etc. via `bash` when process scope is available
+- Project: [Panniantong/Agent-Reach](https://github.com/Panniantong/Agent-Reach)
+
 ---
 
 ## Web Task Classification
@@ -86,6 +93,8 @@ Before executing any tool, classify the request into one primary task type:
 | Change source | Edit tool | Shell redirection |
 | Framework behavior | Official docs | Guessing |
 | Mobile layout | Viewport/responsive tools | Desktop screenshot only |
+| Research Twitter/Reddit/YouTube/XHS outside the app under test | Agent Reach (`agent_reach_*` + upstream CLIs) | Playwright alone on login-walled sites |
+| Read arbitrary public web article as clean text | Agent Reach / Jina via upstream tools | Raw HTML dump |
 
 ---
 
@@ -187,6 +196,33 @@ Always read `package.json scripts` to find the actual configured command. Do not
 | **"No failed requests"** | Network requests list inspected during page flow, showing only `2xx` / `3xx` codes. |
 
 Never make stronger claims than the evidence supports.
+
+---
+
+## Agent Reach (External Platform Research)
+
+Playwright verifies **your local web app**. [Agent Reach](https://github.com/Panniantong/Agent-Reach) is the preferred path when the task needs **external** platforms (Twitter/X, Reddit, YouTube transcripts, Bilibili, XiaoHongShu, GitHub public data, RSS, free web search) without paid APIs.
+
+**When to use**
+- Competitor / social feedback research for a product feature
+- Summarize a YouTube tutorial or public GitHub discussion
+- Fetch platform content that blocks anonymous/server IPs
+
+**When not to use**
+- Localhost UI, console errors, network failures in the app under test → Playwright
+- Pixel / responsive verification → screenshots + image tools
+
+**Workflow**
+1. Ensure web profile is active (`auvrynt start web` or Playwright enabled).
+2. Call `agent_reach_status`. If not installed, return `agent_reach_guide` install one-liner to the user.
+3. After install, `agent_reach_doctor` (optionally `json: true`).
+4. Call upstream tools directly (`yt-dlp`, `gh`, `twitter`, …) via shell/`bash` — Agent Reach is a router, not a permanent wrapper.
+5. Prefer secondary accounts for cookie-based platforms; cookies stay local.
+
+Install one-liner for agents:
+```text
+Install Agent Reach: https://raw.githubusercontent.com/Panniantong/agent-reach/main/docs/install.md
+```
 
 ---
 

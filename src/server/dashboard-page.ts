@@ -28,6 +28,11 @@ const PAGE_META = {
     title: "Commands",
     description: "Search the local Auvrynt command surface.",
   },
+  tools: {
+    kicker: "Configuration",
+    title: "Tool settings",
+    description: "Enable or disable individual integration tools. Disabled tools disappear from the MCP tool list.",
+  },
 } as const;
 
 export function dashboardHtml(view: DashboardView, nonce: string): string {
@@ -149,12 +154,22 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
             </section>
 
             <section class="section-surface" aria-labelledby="integrations-title">
-              <div class="section-head"><div><h2 id="integrations-title">Integrations</h2><p>Availability and live bridge state.</p></div></div>
+              <div class="section-head">
+                <div><h2 id="integrations-title">Integrations</h2><p>Availability and live bridge state.</p></div>
+                <button class="icon-button" id="open-tool-settings" type="button" aria-label="Open tool settings" title="Tool settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z"/><path d="M19.4 13.5a7.6 7.6 0 0 0 .1-1.5 7.6 7.6 0 0 0-.1-1.5l2-1.5-2-3.5-2.4 1a8.2 8.2 0 0 0-2.6-1.5L14 2.8h-4l-.4 2.7a8.2 8.2 0 0 0-2.6 1.5l-2.4-1-2 3.5 2 1.5a7.6 7.6 0 0 0 0 3l-2 1.5 2 3.5 2.4-1a8.2 8.2 0 0 0 2.6 1.5l.4 2.7h4l.4-2.7a8.2 8.2 0 0 0 2.6-1.5l2.4 1 2-3.5z"/></svg></button>
+              </div>
               <div class="integration-list" id="integrations"></div>
+            </section>
+
+            <section class="section-surface skills-span" aria-labelledby="connectivity-skills-title">
+              <div class="section-head">
+                <div><h2 id="connectivity-skills-title">Skills</h2><p>Installed Agent Skills available to agents on open_workspace.</p></div>
+              </div>
+              <div class="skills-meta" id="skills-meta-connectivity"></div>
+              <div class="skill-list" id="skill-list-connectivity"></div>
             </section>
           </div>
         </section>
-
         <section class="dashboard-view" id="view-secrets" role="tabpanel" aria-labelledby="tab-secrets" data-view-panel="secrets" hidden>
           <div class="secrets-layout">
             <section class="section-surface" aria-labelledby="secret-add-title">
@@ -171,6 +186,17 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
               <div class="section-head"><div><h2 id="secret-list-title">Saved ngrok tokens</h2><p>Only fingerprints and health state are displayed.</p></div></div>
               <div class="token-list" id="ngrok-token-list"></div>
             </section>
+
+            <section class="section-surface" aria-labelledby="context7-secret-title">
+              <div class="section-head"><div><h2 id="context7-secret-title">Context7 API key</h2><p>Stored only in the private local Auvrynt auth file. The raw key is never shown again.</p></div></div>
+              <form class="secret-form" id="context7-key-form" autocomplete="off">
+                <label class="secret-label" for="context7-key-input">Context7 API key</label>
+                <div class="secret-input-row"><input class="secret-input" id="context7-key-input" type="password" minlength="8" maxlength="512" spellcheck="false" autocomplete="new-password" placeholder="Paste Context7 API key" /><button class="button primary" id="save-context7-key" type="submit">Save key</button></div>
+                <p class="secret-help">Get a free key at context7.com/dashboard. Auvrynt keeps only a SHA-256 fingerprint on this page. Override with AUVRYNT_CONTEXT7_API_KEY if needed.</p>
+              </form>
+              <div class="token-list" id="context7-key-status"></div>
+              <p class="secret-warning" id="context7-environment-warning" hidden>AUVRYNT_CONTEXT7_API_KEY currently overrides the saved key. Remove the environment variable to manage it here.</p>
+            </section>
           </div>
         </section>
 
@@ -182,6 +208,17 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
         <section class="dashboard-view" id="view-commands" role="tabpanel" aria-labelledby="tab-commands" data-view-panel="commands" hidden>
           <div class="view-toolbar command-toolbar"><div><h2>Command reference</h2><p class="page-description">Browse Auvrynt commands and copy them for use in a local terminal.</p></div><input class="search" id="command-search" type="search" placeholder="Filter commands…" autocomplete="off" /></div>
           <div class="commands" id="command-list">${commands}</div>
+        </section>
+
+        <section class="dashboard-view" id="view-tools" role="tabpanel" aria-labelledby="tab-tools" data-view-panel="tools" hidden>
+          <div class="view-toolbar tools-toolbar">
+            <div class="tools-tab-stack">
+              <div class="tools-integration-tabs" id="tools-integration-tabs" role="tablist" aria-label="Integration tool settings"></div>
+              <div class="tools-sub-tabs" id="tools-sub-tabs" role="tablist" aria-label="Integration tool subgroups" hidden></div>
+            </div>
+            <input class="search" id="tools-search" type="search" placeholder="Filter tools…" autocomplete="off" />
+          </div>
+          <div class="tools-layout" id="tools-layout"></div>
         </section>
       </main>
     </div>
@@ -199,10 +236,12 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
         let unseenLogs = 0;
         let lifecycleMode = null;
         let refreshFailures = 0;
-        const viewNames = ["analytics", "connectivity", "secrets", "logs", "commands"];
+        const viewNames = ["analytics", "connectivity", "secrets", "logs", "commands", "tools"];
         let activeView = viewNames.includes(window.location.hash.slice(1)) ? window.location.hash.slice(1) : "analytics";
         const logs = document.getElementById("log-list");
         const integrations = document.getElementById("integrations");
+        const skillList = document.getElementById("skill-list-connectivity");
+        const skillsMeta = document.getElementById("skills-meta-connectivity");
         const notice = document.getElementById("action-notice");
         const newLogs = document.getElementById("new-logs");
         const logSearch = document.getElementById("log-search");
@@ -218,6 +257,11 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
         const addNgrokTokenButton = document.getElementById("add-ngrok-token");
         const ngrokTokenList = document.getElementById("ngrok-token-list");
         const ngrokEnvironmentWarning = document.getElementById("ngrok-environment-warning");
+        const context7KeyForm = document.getElementById("context7-key-form");
+        const context7KeyInput = document.getElementById("context7-key-input");
+        const saveContext7KeyButton = document.getElementById("save-context7-key");
+        const context7KeyStatus = document.getElementById("context7-key-status");
+        const context7EnvironmentWarning = document.getElementById("context7-environment-warning");
         const restartButton = document.getElementById("restart");
         const stopButton = document.getElementById("stop");
         const lifecycleOverlay = document.getElementById("lifecycle-overlay");
@@ -234,6 +278,19 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
         const sessionIdleTimeoutForm = document.getElementById("session-idle-timeout-form");
         const sessionIdleTimeoutInput = document.getElementById("session-idle-timeout-input");
         const saveSessionIdleTimeoutButton = document.getElementById("save-session-idle-timeout");
+        const toolsIntegrationTabs = document.getElementById("tools-integration-tabs");
+        const toolsSubTabs = document.getElementById("tools-sub-tabs");
+        const toolsSearch = document.getElementById("tools-search");
+        const toolsLayout = document.getElementById("tools-layout");
+        let toolsPrimary = null;
+        let toolsSub = null;
+        let toolsIntegration = null;
+        let toolsData = null;
+        let toolsFilter = "";
+        let toolsBusy = new Set();
+        const toolsOpenGroups = new Set();
+        let toolsRendering = false;
+        const openToolSettingsButton = document.getElementById("open-tool-settings");
         let confirmResolver = null;
         let refreshTimer = null;
 
@@ -340,6 +397,13 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
           pageDescription.textContent = pageMeta[activeView].description;
           pageDescription.hidden = !pageMeta[activeView].description;
           if (updateHash) window.history.replaceState(null, "", "#" + activeView);
+          if (activeView === "tools") {
+            // Populate tabs on hash load / keyboard nav, not only gear click.
+            if (!toolsPrimary) resolveToolsSelection(null);
+            renderToolsTabs();
+            if (!toolsData) void loadActiveToolsPanel();
+            else renderTools();
+          }
         }
 
         function renderAgentPresence() {
@@ -465,7 +529,43 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
         }
 
         function renderIntegrations() {
-          integrations.innerHTML = state.integrations.map((item) => '<div class="integration-row"><div class="integration-name"><strong>' + escape(item.label) + '</strong><small>' + escape(item.detail) + '</small></div><span class="state ' + item.state + '">' + escape(item.state) + '</span><button class="button integration-toggle" type="button" data-integration="' + escape(item.key) + '" data-enabled="' + item.enabled + '">' + (item.enabled ? "Disable" : "Enable") + '</button></div>').join("");
+          integrations.innerHTML = state.integrations.map((item) => {
+            const countBadge = item.toolCount > 0
+              ? '<span class="tool-count" title="' + item.toolEnabledCount + ' of ' + item.toolCount + ' tools enabled"><strong>' + item.toolEnabledCount + '</strong>/' + item.toolCount + '</span>'
+              : "";
+            return '<div class="integration-row"><div class="integration-name"><strong>' + escape(item.label) + '</strong><small>' + escape(item.detail) + '</small></div>' + countBadge + '<span class="state ' + item.state + '">' + escape(item.state) + '</span><button class="button integration-toggle" type="button" data-integration="' + escape(item.key) + '" data-enabled="' + item.enabled + '">' + (item.enabled ? "Disable" : "Enable") + '</button></div>';
+          }).join("");
+        }
+
+        function renderSkills() {
+          const skillsState = state.skills || { enabled: false, agentDir: "", skillPaths: [], skills: [], diagnostics: [] };
+          if (skillsMeta) {
+            const rows = [];
+            rows.push('<div class="connection-row"><span class="connection-label">Status</span><span class="connection-value">' + (skillsState.enabled ? 'Skills enabled' : 'Skills disabled (AUVRYNT_SKILLS=false)') + '</span></div>');
+            rows.push('<div class="connection-row"><span class="connection-label">Agent dir</span><span class="connection-value" title="' + escape(skillsState.agentDir || '') + '">' + escape(skillsState.agentDir || '—') + '</span></div>');
+            if (skillsState.workspaceRoot) {
+              rows.push('<div class="connection-row"><span class="connection-label">Workspace</span><span class="connection-value" title="' + escape(skillsState.workspaceRoot) + '">' + escape(skillsState.workspaceRoot) + '</span></div>');
+            }
+            const extra = (skillsState.skillPaths || []).length ? skillsState.skillPaths.join(', ') : 'none';
+            rows.push('<div class="connection-row"><span class="connection-label">Extra paths</span><span class="connection-value" title="' + escape(extra) + '">' + escape(extra) + '</span></div>');
+            rows.push('<div class="connection-row"><span class="connection-label">Agent access</span><span class="connection-value">Returned on open_workspace as available skills</span></div>');
+            skillsMeta.innerHTML = rows.join('');
+          }
+          if (!skillList) return;
+          if (!skillsState.enabled) {
+            skillList.innerHTML = '<div class="empty">Skills are disabled. Set AUVRYNT_SKILLS=true (default) to load Agent Skills.</div>';
+            return;
+          }
+          const skills = skillsState.skills || [];
+          if (!skills.length) {
+            skillList.innerHTML = '<div class="empty">No skills discovered under agent dir, project .pi/skills, or AUVRYNT_SKILL_PATHS.</div>';
+            return;
+          }
+          skillList.innerHTML = skills.map((skill) => {
+            const badge = skill.disableModelInvocation ? 'manual' : skill.scope;
+            const badgeClass = skill.disableModelInvocation ? 'exhausted' : (skill.scope === 'project' ? 'active' : '');
+            return '<div class="skill-row"><div class="skill-name"><strong>' + escape(skill.name) + '</strong></div><span class="token-status ' + badgeClass + '">' + escape(badge) + '</span></div>';
+          }).join('');
         }
 
         function renderNgrok() {
@@ -497,6 +597,19 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
               return '<div class="token-row"><div class="token-name"><strong>' + escape(token.fingerprint) + '</strong><small>' + escape(detail) + '</small></div><span class="token-status ' + statusClass + '">' + status + '</span><div class="token-actions">' + activateButton + '<button class="button token-action stop" type="button" data-ngrok-action="remove" data-ngrok-index="' + token.index + '">Remove</button></div></div>';
             }).join("")
             : '<div class="empty">No managed ngrok tokens saved.</div>';
+        }
+
+        function renderContext7() {
+          const context7 = state.context7 || { configured: false, environmentOverride: false };
+          context7EnvironmentWarning.hidden = !context7.environmentOverride;
+          context7KeyInput.disabled = Boolean(context7.environmentOverride);
+          saveContext7KeyButton.disabled = Boolean(context7.environmentOverride);
+          if (context7.configured) {
+            const source = context7.environmentOverride ? 'Environment override' : 'Saved in local auth file';
+            context7KeyStatus.innerHTML = '<div class="token-row"><div class="token-name"><strong>' + escape(context7.fingerprint || 'configured') + '</strong><small>' + escape(source) + '</small></div><span class="token-status active">Configured</span><div class="token-actions"><button class="button token-action stop" type="button" id="clear-context7-key" ' + (context7.environmentOverride ? 'disabled' : '') + '>Remove</button></div></div>';
+          } else {
+            context7KeyStatus.innerHTML = '<div class="empty">No Context7 API key saved.</div>';
+          }
         }
 
         function renderConnection() {
@@ -532,10 +645,16 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
           renderAgentPresence();
           renderConnection();
           renderIntegrations();
+          renderSkills();
           renderNgrok();
+          renderContext7();
           renderAnalytics();
           renderLogs();
           renderServerState();
+          if (activeView === "tools") {
+            renderToolsTabs();
+            if (toolsData) renderTools();
+          }
         }
 
         async function refresh() {
@@ -728,6 +847,8 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
           if (event.target === confirmDialog) finishConfirmation(false);
         });
 
+        openToolSettingsButton?.addEventListener("click", () => { void openToolsView(); });
+
         integrations.addEventListener("click", async (event) => {
           const button = event.target.closest("[data-integration]");
           if (!button) return;
@@ -745,9 +866,291 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
           }
         });
 
+        async function loadToolsData(integration) {
+          const response = await fetch("/dashboard/tools?integration=" + encodeURIComponent(integration), { cache: "no-store", signal: AbortSignal.timeout(5_000) });
+          if (!response.ok) throw new Error("Tool data failed (" + response.status + ")");
+          return await response.json();
+        }
+
+        function integrationByKey(key) {
+          return state.integrations.find((item) => item.key === key);
+        }
+
+        function buildToolsPrimaryTabs() {
+          const tabs = [];
+          const gds = integrationByKey("godotGdscript");
+          const gcs = integrationByKey("godotCsharp");
+          const godotCount = (gds?.toolCount || 0) + (gcs?.toolCount || 0);
+          if (godotCount > 0) {
+            tabs.push({ key: "godot", label: "Godot", toolCount: godotCount });
+          }
+          const serena = integrationByKey("serena");
+          const context7 = integrationByKey("context7");
+          const obsidian = integrationByKey("obsidian");
+          const memoryCount = (serena?.toolCount || 0) + (context7?.toolCount || 0) + (obsidian?.toolCount || 0);
+          if (memoryCount > 0) {
+            tabs.push({ key: "memory", label: "Memory", toolCount: memoryCount });
+          }
+          for (const item of state.integrations) {
+            if (item.key === "godotGdscript" || item.key === "godotCsharp" || item.key === "serena" || item.key === "context7" || item.key === "obsidian") continue;
+            if (item.toolCount > 0) tabs.push({ key: item.key, label: item.label, toolCount: item.toolCount });
+          }
+          return tabs;
+        }
+
+        function buildToolsSubTabs(primary) {
+          if (primary === "godot") {
+            return [
+              { key: "godotGdscript", label: "GDScript", toolCount: integrationByKey("godotGdscript")?.toolCount || 0 },
+              { key: "godotCsharp", label: "C#", toolCount: integrationByKey("godotCsharp")?.toolCount || 0 },
+            ].filter((item) => item.toolCount > 0);
+          }
+          if (primary === "memory") {
+            return [
+              { key: "serena", label: "Serena", toolCount: integrationByKey("serena")?.toolCount || 0 },
+              { key: "obsidian", label: "Obsidian", toolCount: integrationByKey("obsidian")?.toolCount || 0 },
+              { key: "context7", label: "Context7", toolCount: integrationByKey("context7")?.toolCount || 0 },
+            ];
+          }
+          return [];
+        }
+
+        function resolveToolsSelection(preferredIntegration) {
+          const primaryTabs = buildToolsPrimaryTabs();
+          if (!primaryTabs.length) {
+            toolsPrimary = null;
+            toolsSub = null;
+            toolsIntegration = null;
+            return;
+          }
+          if (preferredIntegration === "godotGdscript" || preferredIntegration === "godotCsharp") {
+            toolsPrimary = primaryTabs.some((t) => t.key === "godot") ? "godot" : primaryTabs[0].key;
+            toolsSub = preferredIntegration;
+          } else if (preferredIntegration === "serena") {
+            toolsPrimary = primaryTabs.some((t) => t.key === "memory") ? "memory" : primaryTabs[0].key;
+            toolsSub = "serena";
+          } else if (preferredIntegration && primaryTabs.some((t) => t.key === preferredIntegration)) {
+            toolsPrimary = preferredIntegration;
+            toolsSub = null;
+          } else if (!toolsPrimary || !primaryTabs.some((t) => t.key === toolsPrimary)) {
+            const enabled = state.integrations.find((item) => item.enabled && item.toolCount > 0);
+            if (enabled?.key === "godotGdscript" || enabled?.key === "godotCsharp") {
+              toolsPrimary = "godot";
+              toolsSub = enabled.key;
+            } else if (enabled?.key === "serena") {
+              toolsPrimary = "memory";
+              toolsSub = "serena";
+            } else {
+              toolsPrimary = enabled?.key || primaryTabs[0].key;
+              toolsSub = null;
+            }
+          }
+          const subs = buildToolsSubTabs(toolsPrimary);
+          if (subs.length) {
+            if (!toolsSub || !subs.some((s) => s.key === toolsSub)) {
+              toolsSub = subs.find((s) => s.toolCount > 0)?.key || subs[0].key;
+            }
+            toolsIntegration = toolsSub;
+          } else {
+            toolsSub = null;
+            toolsIntegration = toolsPrimary;
+          }
+        }
+
+        async function loadActiveToolsPanel() {
+          if (!toolsPrimary) {
+            toolsData = null;
+            toolsLayout.innerHTML = '<div class="empty">No integration tools are registered yet.</div>';
+            return;
+          }
+          if (!toolsIntegration) {
+            toolsData = null;
+            toolsLayout.innerHTML = '<div class="empty">No tools available for this tab.</div>';
+            return;
+          }
+          toolsLayout.innerHTML = '<div class="empty">Loading tools…</div>';
+          try {
+            const data = await loadToolsData(toolsIntegration);
+            toolsData = data.tools || [];
+            renderTools();
+          } catch (error) {
+            toolsData = null;
+            toolsLayout.innerHTML = '<div class="empty">Unable to load tools: ' + escape(error instanceof Error ? error.message : String(error)) + "</div>";
+          }
+        }
+
+        async function openToolsView(preferredIntegration) {
+          toolsPrimary = null;
+          toolsSub = null;
+          toolsIntegration = null;
+          toolsData = null;
+          resolveToolsSelection(preferredIntegration);
+          setActiveView("tools");
+          await loadActiveToolsPanel();
+        }
+
+        function renderToolsTabs() {
+          const primaryTabs = buildToolsPrimaryTabs();
+          toolsIntegrationTabs.innerHTML = primaryTabs.map((item) => {
+            const active = item.key === toolsPrimary;
+            return '<button class="tools-tab' + (active ? " active" : "") + '" role="tab" aria-selected="' + (active ? "true" : "false") + '" data-tools-tab="' + escape(item.key) + '" type="button">' + escape(item.label) + '<small>' + item.toolCount + '</small></button>';
+          }).join("") || '<span class="tools-no-tabs">No integration tools are registered yet.</span>';
+
+          const subs = buildToolsSubTabs(toolsPrimary);
+          if (!toolsSubTabs) return;
+          if (!subs.length) {
+            toolsSubTabs.hidden = true;
+            toolsSubTabs.innerHTML = "";
+            return;
+          }
+          toolsSubTabs.hidden = false;
+          toolsSubTabs.innerHTML = subs.map((item) => {
+            const active = item.key === toolsSub;
+            const count = item.placeholder ? "" : "<small>" + item.toolCount + "</small>";
+            return '<button class="tools-tab' + (active ? " active" : "") + '" role="tab" aria-selected="' + (active ? "true" : "false") + '" data-tools-sub="' + escape(item.key) + '" type="button">' + escape(item.label) + count + '</button>';
+          }).join("");
+        }
+
+
+        function captureOpenToolBatches() {
+          toolsLayout.querySelectorAll("[data-tools-batch]").forEach((batch) => {
+            if (batch.open) toolsOpenGroups.add(batch.dataset.toolsBatch);
+            else toolsOpenGroups.delete(batch.dataset.toolsBatch);
+          });
+        }
+
+        function renderTools() {
+          if (!toolsData) { toolsLayout.innerHTML = '<div class="empty">No tools loaded.</div>'; return; }
+          captureOpenToolBatches();
+          const filter = toolsFilter.trim().toLowerCase();
+          const visible = filter ? toolsData.filter((tool) => tool.name.toLowerCase().includes(filter) || tool.title.toLowerCase().includes(filter) || tool.group.toLowerCase().includes(filter)) : toolsData;
+          const groups = new Map();
+          for (const tool of visible) {
+            const list = groups.get(tool.group) ?? [];
+            list.push(tool);
+            groups.set(tool.group, list);
+          }
+          const allEnabledCount = toolsData.filter((tool) => tool.enabled).length;
+          const total = toolsData.length;
+          const summary = '<div class="tools-summary"><strong>' + allEnabledCount + '</strong> of <strong>' + total + '</strong> tools enabled</div>';
+          const searching = Boolean(toolsFilter.trim());
+          const groupMarkup = Array.from(groups.entries()).map(([group, tools]) => {
+            const enabledCount = tools.filter((tool) => tool.enabled).length;
+            const allOn = enabledCount === tools.length;
+            const someOn = enabledCount > 0 && !allOn;
+            const open = searching || toolsOpenGroups.has(group);
+            const groupBusy = tools.some((tool) => toolsBusy.has(tool.name));
+            return '<details class="tools-group' + (someOn ? " partial" : "") + '" data-tools-batch="' + escape(group) + '"' + (open ? " open" : "") + '>' +
+              '<summary class="tools-group-head">' +
+                '<span class="tools-group-title"><span class="tools-group-chevron" aria-hidden="true"></span><strong>' + escape(group) + '</strong><span class="tools-group-count">' + enabledCount + '/' + tools.length + '</span></span>' +
+                '<label class="tool-toggle tools-group-toggle" title="' + (allOn ? "Disable batch" : "Enable batch") + '"' + (someOn ? ' data-partial="true"' : '') + '>' +
+                  '<input type="checkbox" data-tools-group="' + escape(group) + '"' + (allOn ? " checked" : "") + (groupBusy ? " disabled" : "") + ' />' +
+                  '<span class="tool-toggle-track" aria-hidden="true"></span>' +
+                '</label>' +
+              '</summary>' +
+              '<div class="tools-group-list">' + tools.map((tool) => {
+                const busy = toolsBusy.has(tool.name);
+                return '<div class="tool-row' + (tool.enabled ? "" : " disabled") + '"><label class="tool-check"><input type="checkbox" data-tool-name="' + escape(tool.name) + '"' + (tool.enabled ? " checked" : "") + (busy ? " disabled" : "") + ' /><span class="tool-check-box" aria-hidden="true"></span></label><div class="tool-info"><strong>' + escape(tool.title) + '</strong><code>' + escape(tool.name) + '</code></div></div>';
+              }).join("") + '</div></details>';
+          }).join("");
+          toolsRendering = true;
+          toolsLayout.innerHTML = summary + (groupMarkup || '<div class="empty">No tools match the filter.</div>');
+          toolsRendering = false;
+        }
+
+        toolsIntegrationTabs.addEventListener("click", (event) => {
+          const tab = event.target.closest("[data-tools-tab]");
+          if (!tab) return;
+          toolsPrimary = tab.dataset.toolsTab;
+          const subs = buildToolsSubTabs(toolsPrimary);
+          toolsSub = subs.find((s) => s.toolCount > 0)?.key || subs[0]?.key || null;
+          toolsIntegration = toolsSub || toolsPrimary;
+          renderToolsTabs();
+          void loadActiveToolsPanel();
+        });
+
+        toolsSubTabs?.addEventListener("click", (event) => {
+          const tab = event.target.closest("[data-tools-sub]");
+          if (!tab) return;
+          toolsSub = tab.dataset.toolsSub;
+          toolsIntegration = toolsSub;
+          renderToolsTabs();
+          void loadActiveToolsPanel();
+        });
+
+        toolsSearch.addEventListener("input", () => {
+          toolsFilter = toolsSearch.value;
+          renderTools();
+        });
+
+        toolsLayout.addEventListener("toggle", (event) => {
+          if (toolsRendering) return;
+          const batch = event.target.closest("[data-tools-batch]");
+          if (!batch || event.target !== batch) return;
+          if (batch.open) toolsOpenGroups.add(batch.dataset.toolsBatch);
+          else toolsOpenGroups.delete(batch.dataset.toolsBatch);
+        });
+
+        toolsLayout.addEventListener("click", (event) => {
+          if (event.target.closest(".tools-group-toggle")) event.stopPropagation();
+        });
+
+        toolsLayout.addEventListener("change", async (event) => {
+          const groupToggle = event.target.closest("[data-tools-group]");
+          if (groupToggle) {
+            const group = groupToggle.dataset.toolsGroup;
+            const groupEnabled = groupToggle.checked;
+            const names = toolsData.filter((tool) => tool.group === group).map((tool) => tool.name);
+            for (const name of names) toolsBusy.add(name);
+            groupToggle.disabled = true;
+            try {
+              const result = await postAction("/__auvrynt/dashboard/tools", { integration: toolsIntegration, group, groupEnabled });
+              for (const tool of toolsData) if (tool.group === group) tool.enabled = groupEnabled;
+              toolsOpenGroups.add(group);
+              renderTools();
+              renderToolsTabs();
+              showToast(result.message || (groupEnabled ? group + " tools enabled." : group + " tools disabled."));
+            } catch (error) {
+              groupToggle.checked = !groupEnabled;
+              toolsOpenGroups.add(group);
+              renderTools();
+              showToast(error instanceof Error ? error.message : String(error), "error");
+            } finally {
+              for (const name of names) toolsBusy.delete(name);
+            }
+            return;
+          }
+          const checkbox = event.target.closest("[data-tool-name]");
+          if (!checkbox) return;
+          const name = checkbox.dataset.toolName;
+          const enabled = checkbox.checked;
+          toolsBusy.add(name);
+          checkbox.disabled = true;
+          try {
+            const result = await postAction("/__auvrynt/dashboard/tools", { integration: toolsIntegration, name, enabled });
+            const tool = toolsData.find((item) => item.name === name);
+            if (tool) {
+              tool.enabled = enabled;
+              toolsOpenGroups.add(tool.group);
+            }
+            renderTools();
+            renderToolsTabs();
+            showToast(result.message || (enabled ? name + " enabled." : name + " disabled."));
+          } catch (error) {
+            checkbox.checked = !enabled;
+            const tool = toolsData.find((item) => item.name === name);
+            if (tool) toolsOpenGroups.add(tool.group);
+            renderTools();
+            showToast(error instanceof Error ? error.message : String(error), "error");
+          } finally {
+            toolsBusy.delete(name);
+          }
+        });
+
         function applyNgrokResult(result) {
           state.ngrok = result.ngrok;
           renderNgrok();
+          renderContext7();
           showToast(result.message || "ngrok credentials updated.");
           if (result.restarting) {
             beginLifecycle(
@@ -760,6 +1163,52 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
           }
           return false;
         }
+
+        function applyContext7Result(result) {
+          state.context7 = result.context7;
+          renderContext7();
+          showToast(result.message || "Context7 credentials updated.");
+        }
+
+        context7KeyForm.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const apiKey = context7KeyInput.value.trim();
+          if (apiKey.length < 8 || apiKey.length > 512 || /\s/.test(apiKey)) {
+            showToast("Enter a valid Context7 API key without spaces.", "error");
+            context7KeyInput.focus();
+            return;
+          }
+          setButtonBusy(saveContext7KeyButton, true, "Saving");
+          context7KeyInput.disabled = true;
+          try {
+            const result = await postAction("/__auvrynt/dashboard/context7-key", { action: "set", apiKey });
+            context7KeyInput.value = "";
+            applyContext7Result(result);
+          } catch (error) {
+            showToast(error instanceof Error ? error.message : String(error), "error");
+          } finally {
+            context7KeyInput.value = "";
+            if (!lifecycleMode) {
+              context7KeyInput.disabled = Boolean(state.context7?.environmentOverride);
+              setButtonBusy(saveContext7KeyButton, false, "");
+            }
+          }
+        });
+
+        context7KeyStatus.addEventListener("click", async (event) => {
+          const button = event.target.closest("#clear-context7-key");
+          if (!button || button.disabled) return;
+          if (!await confirmAction("Remove Context7 API key?", "Auvrynt will delete the saved Context7 API key from the local auth file.", "Remove")) return;
+          setButtonBusy(button, true, "Removing");
+          try {
+            const result = await postAction("/__auvrynt/dashboard/context7-key", { action: "clear" });
+            applyContext7Result(result);
+          } catch (error) {
+            showToast(error instanceof Error ? error.message : String(error), "error");
+          } finally {
+            if (!lifecycleMode) setButtonBusy(button, false, "");
+          }
+        });
 
         ngrokTokenForm.addEventListener("submit", async (event) => {
           event.preventDefault();

@@ -5,6 +5,30 @@ import type { WorkspaceRegistry } from "../../workspaces.js";
 import type { ProcessManager } from "../../processes.js";
 import { getRequestContext } from "../../request-context.js";
 import { startDevServer, capturePageScreenshot, inspectPage, testResponsivePage } from "../../web-tools.js";
+import {
+  browserOpen,
+  browserClose,
+  browserListSessions,
+  browserNavigate,
+  browserReload,
+  browserGoBack,
+  browserGoForward,
+  browserSnapshot,
+  browserClick,
+  browserType,
+  browserSelectOption,
+  browserHover,
+  browserPressKey,
+  browserWaitFor,
+  browserGetText,
+  browserGetAttribute,
+  browserIsVisible,
+  browserScroll,
+  browserConsole,
+  browserNetwork,
+  browserEvaluate,
+  browserScreenshot,
+} from "../../integrations/playwright/browser-session.js";
 import { compareImages, inspectImage, inspectSprite, splitSpriteSheet } from "../../image-tools.js";
 import { registerAppTool } from "../mcp-tool-registrar.js";
 import {
@@ -92,6 +116,248 @@ export function registerWebImageTools(
     ...toolWidgetDescriptorMeta(config, "write"), annotations: WEB_WRITE_ANNOTATIONS,
   }, ({ workspaceId, url, outputDirectory, viewports, fullPage }) =>
     testResponsivePage(workspaces, { workspaceId, url, outputDirectory, viewports, fullPage }));
+
+  const sessionIdSchema = z.string().describe("Browser session id from browser_open.");
+  const selectorSchema = z.string().describe("CSS selector, text=, or Playwright locator string.");
+
+  registerAppTool(server, "browser_open", {
+    title: "Open browser session",
+    description: "Open a persistent Playwright Chromium session for interactive automation. Returns sessionId for subsequent browser_* tools. Max 4 concurrent sessions; idle sessions expire after 15 minutes.",
+    inputSchema: {
+      workspaceId: WORKSPACE_ID_SCHEMA,
+      url: z.string().optional().describe("Optional initial page URL (http/https)."),
+      viewportWidth: z.number().int().optional().describe("Viewport width (default 1280, max 3840)."),
+      viewportHeight: z.number().int().optional().describe("Viewport height (default 800, max 2160)."),
+      userAgent: z.string().optional().describe("Optional custom user agent."),
+    },
+    ...toolWidgetDescriptorMeta(config, "read"), annotations: WEB_READ_ANNOTATIONS,
+  }, ({ workspaceId, url, viewportWidth, viewportHeight, userAgent }) =>
+    browserOpen(workspaces, { workspaceId, url, viewportWidth, viewportHeight, userAgent }));
+
+  registerAppTool(server, "browser_close", {
+    title: "Close browser session",
+    description: "Close a Playwright browser session and free capacity.",
+    inputSchema: { sessionId: sessionIdSchema },
+    ...toolWidgetDescriptorMeta(config, "read"), annotations: WEB_READ_ANNOTATIONS,
+  }, ({ sessionId }) => browserClose({ sessionId }));
+
+  registerAppTool(server, "browser_list_sessions", {
+    title: "List browser sessions",
+    description: "List active Playwright browser sessions, optionally filtered by workspace.",
+    inputSchema: { workspaceId: WORKSPACE_ID_SCHEMA.optional() },
+    ...toolWidgetDescriptorMeta(config, "read"), annotations: WEB_READ_ANNOTATIONS,
+  }, ({ workspaceId }) => browserListSessions({ workspaceId }));
+
+  registerAppTool(server, "browser_navigate", {
+    title: "Browser navigate",
+    description: "Navigate an open browser session to a URL with SSRF protection.",
+    inputSchema: {
+      sessionId: sessionIdSchema,
+      url: z.string().describe("Target page URL (http/https)."),
+      waitUntil: z.enum(["load", "domcontentloaded", "networkidle"]).optional(),
+    },
+    ...toolWidgetDescriptorMeta(config, "read"), annotations: WEB_READ_ANNOTATIONS,
+  }, ({ sessionId, url, waitUntil }) => browserNavigate({ sessionId, url, waitUntil }));
+
+  registerAppTool(server, "browser_reload", {
+    title: "Browser reload",
+    description: "Reload the current page in a browser session.",
+    inputSchema: { sessionId: sessionIdSchema },
+    ...toolWidgetDescriptorMeta(config, "read"), annotations: WEB_READ_ANNOTATIONS,
+  }, ({ sessionId }) => browserReload({ sessionId }));
+
+  registerAppTool(server, "browser_go_back", {
+    title: "Browser go back",
+    description: "Navigate back in browser history.",
+    inputSchema: { sessionId: sessionIdSchema },
+    ...toolWidgetDescriptorMeta(config, "read"), annotations: WEB_READ_ANNOTATIONS,
+  }, ({ sessionId }) => browserGoBack({ sessionId }));
+
+  registerAppTool(server, "browser_go_forward", {
+    title: "Browser go forward",
+    description: "Navigate forward in browser history.",
+    inputSchema: { sessionId: sessionIdSchema },
+    ...toolWidgetDescriptorMeta(config, "read"), annotations: WEB_READ_ANNOTATIONS,
+  }, ({ sessionId }) => browserGoForward({ sessionId }));
+
+  registerAppTool(server, "browser_snapshot", {
+    title: "Browser snapshot",
+    description: "Capture a structured page snapshot: headings, buttons, links, inputs, and optional accessibility tree.",
+    inputSchema: {
+      sessionId: sessionIdSchema,
+      interestingOnly: z.boolean().optional().describe("Accessibility snapshot interesting-only mode (default true)."),
+      maxChars: z.number().int().optional().describe("Truncate response text length."),
+    },
+    ...toolWidgetDescriptorMeta(config, "read"), annotations: WEB_READ_ANNOTATIONS,
+  }, ({ sessionId, interestingOnly, maxChars }) => browserSnapshot({ sessionId, interestingOnly, maxChars }));
+
+  registerAppTool(server, "browser_click", {
+    title: "Browser click",
+    description: "Click an element in an open browser session.",
+    inputSchema: {
+      sessionId: sessionIdSchema,
+      selector: selectorSchema,
+      button: z.enum(["left", "right", "middle"]).optional(),
+      clickCount: z.number().int().optional(),
+      timeoutMs: z.number().int().optional(),
+    },
+    ...toolWidgetDescriptorMeta(config, "read"), annotations: WEB_READ_ANNOTATIONS,
+  }, ({ sessionId, selector, button, clickCount, timeoutMs }) =>
+    browserClick({ sessionId, selector, button, clickCount, timeoutMs }));
+
+  registerAppTool(server, "browser_type", {
+    title: "Browser type",
+    description: "Type or fill text into an input/textarea in an open browser session.",
+    inputSchema: {
+      sessionId: sessionIdSchema,
+      selector: selectorSchema,
+      text: z.string().describe("Text to type or fill."),
+      clear: z.boolean().optional().describe("Clear existing value first (default true)."),
+      delayMs: z.number().int().optional().describe("Per-key delay when clear=false."),
+      timeoutMs: z.number().int().optional(),
+    },
+    ...toolWidgetDescriptorMeta(config, "read"), annotations: WEB_READ_ANNOTATIONS,
+  }, ({ sessionId, selector, text, clear, delayMs, timeoutMs }) =>
+    browserType({ sessionId, selector, text, clear, delayMs, timeoutMs }));
+
+  registerAppTool(server, "browser_select_option", {
+    title: "Browser select option",
+    description: "Select one or more options in a <select> element.",
+    inputSchema: {
+      sessionId: sessionIdSchema,
+      selector: selectorSchema,
+      values: z.union([z.string(), z.array(z.string())]).describe("Option value(s) to select."),
+      timeoutMs: z.number().int().optional(),
+    },
+    ...toolWidgetDescriptorMeta(config, "read"), annotations: WEB_READ_ANNOTATIONS,
+  }, ({ sessionId, selector, values, timeoutMs }) => browserSelectOption({ sessionId, selector, values, timeoutMs }));
+
+  registerAppTool(server, "browser_hover", {
+    title: "Browser hover",
+    description: "Hover over an element in an open browser session.",
+    inputSchema: {
+      sessionId: sessionIdSchema,
+      selector: selectorSchema,
+      timeoutMs: z.number().int().optional(),
+    },
+    ...toolWidgetDescriptorMeta(config, "read"), annotations: WEB_READ_ANNOTATIONS,
+  }, ({ sessionId, selector, timeoutMs }) => browserHover({ sessionId, selector, timeoutMs }));
+
+  registerAppTool(server, "browser_press_key", {
+    title: "Browser press key",
+    description: "Press a keyboard key, optionally focused on a selector.",
+    inputSchema: {
+      sessionId: sessionIdSchema,
+      key: z.string().describe("Key name, e.g. Enter, Tab, Escape, ArrowDown."),
+      selector: z.string().optional().describe("Optional element to focus before keypress."),
+      timeoutMs: z.number().int().optional(),
+    },
+    ...toolWidgetDescriptorMeta(config, "read"), annotations: WEB_READ_ANNOTATIONS,
+  }, ({ sessionId, key, selector, timeoutMs }) => browserPressKey({ sessionId, key, selector, timeoutMs }));
+
+  registerAppTool(server, "browser_wait_for", {
+    title: "Browser wait",
+    description: "Wait for a selector, URL, load state, or a short timeout.",
+    inputSchema: {
+      sessionId: sessionIdSchema,
+      selector: z.string().optional(),
+      url: z.string().optional().describe("URL substring or pattern to wait for."),
+      loadState: z.enum(["load", "domcontentloaded", "networkidle"]).optional(),
+      state: z.enum(["attached", "detached", "visible", "hidden"]).optional(),
+      timeoutMs: z.number().int().optional(),
+    },
+    ...toolWidgetDescriptorMeta(config, "read"), annotations: WEB_READ_ANNOTATIONS,
+  }, ({ sessionId, selector, url, loadState, state, timeoutMs }) =>
+    browserWaitFor({ sessionId, selector, url, loadState, state, timeoutMs }));
+
+  registerAppTool(server, "browser_get_text", {
+    title: "Browser get text",
+    description: "Read textContent of an element.",
+    inputSchema: {
+      sessionId: sessionIdSchema,
+      selector: selectorSchema,
+      timeoutMs: z.number().int().optional(),
+    },
+    ...toolWidgetDescriptorMeta(config, "read"), annotations: WEB_READ_ANNOTATIONS,
+  }, ({ sessionId, selector, timeoutMs }) => browserGetText({ sessionId, selector, timeoutMs }));
+
+  registerAppTool(server, "browser_get_attribute", {
+    title: "Browser get attribute",
+    description: "Read an element attribute value.",
+    inputSchema: {
+      sessionId: sessionIdSchema,
+      selector: selectorSchema,
+      name: z.string().describe("Attribute name, e.g. href, value, aria-label."),
+      timeoutMs: z.number().int().optional(),
+    },
+    ...toolWidgetDescriptorMeta(config, "read"), annotations: WEB_READ_ANNOTATIONS,
+  }, ({ sessionId, selector, name, timeoutMs }) => browserGetAttribute({ sessionId, selector, name, timeoutMs }));
+
+  registerAppTool(server, "browser_is_visible", {
+    title: "Browser is visible",
+    description: "Check whether an element is visible.",
+    inputSchema: {
+      sessionId: sessionIdSchema,
+      selector: selectorSchema,
+      timeoutMs: z.number().int().optional(),
+    },
+    ...toolWidgetDescriptorMeta(config, "read"), annotations: WEB_READ_ANNOTATIONS,
+  }, ({ sessionId, selector, timeoutMs }) => browserIsVisible({ sessionId, selector, timeoutMs }));
+
+  registerAppTool(server, "browser_scroll", {
+    title: "Browser scroll",
+    description: "Scroll an element into view, or wheel-scroll the page.",
+    inputSchema: {
+      sessionId: sessionIdSchema,
+      selector: z.string().optional().describe("If set, scroll this element into view."),
+      deltaX: z.number().optional(),
+      deltaY: z.number().optional().describe("Wheel delta Y when no selector (default 600)."),
+    },
+    ...toolWidgetDescriptorMeta(config, "read"), annotations: WEB_READ_ANNOTATIONS,
+  }, ({ sessionId, selector, deltaX, deltaY }) => browserScroll({ sessionId, selector, deltaX, deltaY }));
+
+  registerAppTool(server, "browser_console", {
+    title: "Browser console",
+    description: "Read console messages captured by the browser session.",
+    inputSchema: {
+      sessionId: sessionIdSchema,
+      clear: z.boolean().optional().describe("Clear stored console logs after reading."),
+      types: z.array(z.string()).optional().describe("Filter by console types, e.g. error, warning."),
+    },
+    ...toolWidgetDescriptorMeta(config, "read"), annotations: WEB_READ_ANNOTATIONS,
+  }, ({ sessionId, clear, types }) => browserConsole({ sessionId, clear, types }));
+
+  registerAppTool(server, "browser_network", {
+    title: "Browser network",
+    description: "Read network requests/responses captured by the browser session, including policy-blocked URLs.",
+    inputSchema: {
+      sessionId: sessionIdSchema,
+      clear: z.boolean().optional().describe("Clear stored network entries after reading."),
+      onlyFailed: z.boolean().optional().describe("Only failed or HTTP 4xx/5xx requests."),
+    },
+    ...toolWidgetDescriptorMeta(config, "read"), annotations: WEB_READ_ANNOTATIONS,
+  }, ({ sessionId, clear, onlyFailed }) => browserNetwork({ sessionId, clear, onlyFailed }));
+
+  registerAppTool(server, "browser_evaluate", {
+    title: "Browser evaluate",
+    description: "Evaluate a short JavaScript expression in the page context. Network/module side effects are blocked.",
+    inputSchema: {
+      sessionId: sessionIdSchema,
+      expression: z.string().describe("Expression to evaluate, e.g. document.title or location.href."),
+    },
+    ...toolWidgetDescriptorMeta(config, "read"), annotations: WEB_READ_ANNOTATIONS,
+  }, ({ sessionId, expression }) => browserEvaluate({ sessionId, expression }));
+
+  registerAppTool(server, "browser_screenshot", {
+    title: "Browser screenshot",
+    description: "Screenshot the current page of an open browser session into the workspace artifact directory.",
+    inputSchema: {
+      sessionId: sessionIdSchema,
+      outputPath: z.string().describe("Workspace-relative PNG path."),
+      fullPage: z.boolean().optional(),
+    },
+    ...toolWidgetDescriptorMeta(config, "write"), annotations: WEB_WRITE_ANNOTATIONS,
+  }, ({ sessionId, outputPath, fullPage }) => browserScreenshot(workspaces, { sessionId, outputPath, fullPage }));
 
   registerAppTool(server, "inspect_image", {
     title: "Inspect image",

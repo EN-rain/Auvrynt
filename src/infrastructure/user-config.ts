@@ -30,6 +30,14 @@ export interface AuvryntIntegrationsConfig {
   aseprite?: boolean;
   serena?: boolean;
   playwright?: boolean;
+  context7?: boolean;
+  obsidian?: boolean;
+  roblox?: boolean;
+}
+
+export interface AuvryntObsidianUserConfig {
+  enabled?: boolean;
+  vaultPath?: string;
 }
 
 export interface AuvryntSerenaUserConfig {
@@ -58,9 +66,11 @@ export interface AuvryntUserConfig {
   executables?: AuvryntExecutablesConfig;
   integrations?: AuvryntIntegrationsConfig;
   serena?: AuvryntSerenaUserConfig;
+  obsidian?: AuvryntObsidianUserConfig;
   tunnelProvider?: "cloudflare" | "ngrok" | "custom";
   ngrokAuthtoken?: string;
   ngrokUrl?: string;
+  toolToggles?: Record<string, boolean>;
 }
 
 export interface AuvryntAuthConfig {
@@ -69,6 +79,7 @@ export interface AuvryntAuthConfig {
   ngrokAuthtokens?: string[];
   ngrokActiveAuthtokenIndex?: number;
   ngrokQuotaExhausted?: Record<string, string>;
+  context7ApiKey?: string;
 }
 
 export interface AuvryntFiles {
@@ -97,9 +108,17 @@ const integrationsSchema = z.object({
   aseprite: z.boolean().optional(),
   serena: z.boolean().optional(),
   playwright: z.boolean().optional(),
+  context7: z.boolean().optional(),
+  obsidian: z.boolean().optional(),
+  roblox: z.boolean().optional(),
 }).strict();
 
 const positiveInteger = z.number().int().positive();
+const obsidianSchema = z.object({
+  enabled: z.boolean().optional(),
+  vaultPath: z.string().min(1).max(1024).optional(),
+});
+
 const serenaSchema = z.object({
   enabled: z.boolean().optional(),
   executable: z.string().optional(),
@@ -126,9 +145,11 @@ const userConfigSchema: z.ZodType<AuvryntUserConfig> = z.object({
   executables: executablesSchema.optional(),
   integrations: integrationsSchema.optional(),
   serena: serenaSchema.optional(),
+  obsidian: obsidianSchema.optional(),
   tunnelProvider: z.enum(["cloudflare", "ngrok", "custom"]).optional(),
   ngrokAuthtoken: z.string().optional(),
   ngrokUrl: z.string().optional(),
+  toolToggles: z.record(z.string(), z.boolean()).optional(),
 }).strict();
 
 const authConfigSchema: z.ZodType<AuvryntAuthConfig> = z.object({
@@ -137,6 +158,7 @@ const authConfigSchema: z.ZodType<AuvryntAuthConfig> = z.object({
   ngrokAuthtokens: z.array(z.string().min(16).max(512)).max(20).optional(),
   ngrokActiveAuthtokenIndex: z.number().int().min(0).optional(),
   ngrokQuotaExhausted: z.record(z.string(), z.string()).optional(),
+  context7ApiKey: z.string().min(8).max(512).optional(),
 }).strict();
 
 export function auvryntConfigDir(env: NodeJS.ProcessEnv = process.env): string {

@@ -4,7 +4,7 @@ import { closeSync, existsSync, fsyncSync, openSync, writeSync } from "node:fs";
 import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-export const INTEGRATION_KEYS = ["godotGdscript", "godotCsharp", "blender", "aseprite", "serena", "playwright"] as const;
+export const INTEGRATION_KEYS = ["godotGdscript", "godotCsharp", "blender", "aseprite", "serena", "playwright", "context7", "obsidian", "roblox"] as const;
 export type IntegrationKey = (typeof INTEGRATION_KEYS)[number];
 
 export const INTEGRATION_LABELS: Record<IntegrationKey, string> = {
@@ -14,6 +14,9 @@ export const INTEGRATION_LABELS: Record<IntegrationKey, string> = {
   aseprite: "Aseprite",
   serena: "Software Development",
   playwright: "Web Development",
+  context7: "Context7",
+  obsidian: "Obsidian",
+  roblox: "Roblox Studio",
 };
 
 const START_PROFILE_ALIASES: Record<string, IntegrationKey> = {
@@ -31,6 +34,13 @@ const START_PROFILE_ALIASES: Record<string, IntegrationKey> = {
   godotgdscript: "godotGdscript",
   se: "serena",
   serena: "serena",
+  context7: "context7",
+  c7: "context7",
+  obsidian: "obsidian",
+  notes: "obsidian",
+  roblox: "roblox",
+  robloxstudio: "roblox",
+  rbx: "roblox",
 };
 
 export interface StartRequest {
@@ -74,12 +84,12 @@ export function parseIntegrationProfiles(args: string[]): IntegrationKey[] {
     .flatMap((arg) => arg.split(/[\s,]+/))
     .map((value) => value.trim().toLowerCase())
     .filter(Boolean);
-  if (tokens.length === 0) throw new Error("Choose at least one profile: model, pixel, web, godotcs, godotgd, or se.");
+  if (tokens.length === 0) throw new Error("Choose at least one profile: model, pixel, web, godotcs, godotgd, se, or roblox.");
 
   const profiles = new Set<IntegrationKey>();
   for (const token of tokens) {
     const profile = START_PROFILE_ALIASES[token];
-    if (!profile) throw new Error(`Unknown start profile: ${token}. Use model, pixel, web, godotcs, godotgd, or se.`);
+    if (!profile) throw new Error(`Unknown start profile: ${token}. Use model, pixel, web, godotcs, godotgd, se, or roblox.`);
     profiles.add(profile);
   }
   return [...profiles];

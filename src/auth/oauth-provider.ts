@@ -541,6 +541,21 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {
     this.pruneExpired();
+
+    // Header-only MCP clients (e.g. Clusy) cannot run the browser /authorize
+    // flow. Accept the Owner token as a long-lived Bearer credential that
+    // grants the configured OAuth scopes. OAuth access tokens still take
+    // precedence when present.
+    if (safeEquals(token, this.config.ownerToken)) {
+      return {
+        token,
+        clientId: "auvrynt-owner-bearer",
+        scopes: [...this.config.scopes],
+        expiresAt: Math.floor(Date.now() / 1000) + this.config.accessTokenTtlSeconds,
+        resource: this.resourceServerUrl,
+      };
+    }
+
     const record = this.accessTokens.get(hashToken(token));
     if (!record || record.expiresAt < Math.floor(Date.now() / 1000)) {
       throw new InvalidTokenError("Invalid or expired access token");

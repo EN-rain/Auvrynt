@@ -9,7 +9,10 @@ import { enqueueIntegration } from "../integration-queue.js";
 import { registerToolCapability } from "../tool-capabilities.js";
 import { limitToolResultPayload } from "../tool-result-budget.js";
 import {
+  godotToolBelongsToIntegration,
+  godotToolFamily,
   hasRequiredScopes,
+  isGodotToolName,
   requiredScopesForToolCall,
   requiredScopesForToolName,
   toolIntegrationEnabled,
@@ -23,6 +26,7 @@ export interface McpToolGuardContext {
 
 const guards = new WeakMap<McpServer, McpToolGuardContext>();
 const registeredTools = new WeakMap<McpServer, Map<string, RegisteredTool>>();
+const toolInventory = new Map<string, string>();
 const BLENDER_UNBOUND_TOOL_NAMES = new Set([
   "blender_ping",
   "blender_get_current_file",
@@ -30,6 +34,76 @@ const BLENDER_UNBOUND_TOOL_NAMES = new Set([
   "blender_save_file_as",
   "blender_list_checkpoints",
 ]);
+
+export function integrationKeyForTool(name: string): string {
+  if (name.startsWith("blender_")) return "blender";
+  if (name.startsWith("aseprite_")) return "aseprite";
+  const godotFamily = godotToolFamily(name);
+  if (godotFamily) return godotFamily;
+  if (name.startsWith("serena_")) return "serena";
+  if (name.startsWith("context7_")) return "context7";
+  if (name.startsWith("obsidian_")) return "obsidian";
+  if (name.startsWith("roblox_")) return "roblox";
+  if (
+    name.startsWith("browser_")
+    || ["capture_page_screenshot", "inspect_page", "test_responsive_page"].includes(name)
+  ) return "playwright";
+  return "core";
+}
+
+function inventoryKeysForDashboardIntegration(integration: string): string[] {
+  if (integration === "godotCsharp") return ["godotCsharp", "godotShared", "godot"];
+  if (integration === "godotGdscript") return ["godotGdscript", "godotShared", "godot"];
+  return [integration];
+}
+
+export function registeredToolNamesForIntegration(integration: string): string[] {
+  const keys = new Set(inventoryKeysForDashboardIntegration(integration));
+  return Array.from(toolInventory.entries())
+    .filter(([name, key]) => {
+      if (!keys.has(key)) return false;
+      if (integration === "godotCsharp" || integration === "godotGdscript") {
+        return godotToolBelongsToIntegration(name, integration) || key === integration;
+      }
+      return true;
+    })
+    .map(([name]) => name);
+}
+
+export function toolInventoryEnabledCount(integration: string, config: ServerConfig): number {
+  return registeredToolNamesForIntegration(integration)
+    .filter((name) => toolIntegrationEnabled(config, name)).length;
+}
+
+function bumpCount(
+  counts: Record<string, { total: number; enabled: number }>,
+  key: string,
+  enabled: boolean,
+): void {
+  const entry = counts[key] ?? { total: 0, enabled: 0 };
+  entry.total += 1;
+  if (enabled) entry.enabled += 1;
+  counts[key] = entry;
+}
+
+export function integrationToolCounts(config: ServerConfig): Record<string, { total: number; enabled: number }> {
+  const counts: Record<string, { total: number; enabled: number }> = {};
+  for (const [name, key] of toolInventory) {
+    const enabled = toolIntegrationEnabled(config, name);
+    if (key === "godotShared" || key === "godot" || isGodotToolName(name)) {
+      const family = godotToolFamily(name) ?? (key as "godotCsharp" | "godotGdscript" | "godotShared");
+      if (family === "godotCsharp") bumpCount(counts, "godotCsharp", enabled);
+      else if (family === "godotGdscript") bumpCount(counts, "godotGdscript", enabled);
+      else {
+        bumpCount(counts, "godotCsharp", enabled);
+        bumpCount(counts, "godotGdscript", enabled);
+      }
+      continue;
+    }
+    bumpCount(counts, key, enabled);
+  }
+  return counts;
+}
 
 export function configureMcpToolGuard(server: McpServer, context: McpToolGuardContext): void {
   guards.set(server, context);
@@ -100,6 +174,7 @@ export const registerAppTool = ((server: McpServer, name: string, toolConfig: un
       if (name.startsWith("aseprite_")) return enqueueIntegration("aseprite", invokeHandler);
       if (name.startsWith("godot_")) return enqueueIntegration("godot", invokeHandler);
       if (name.startsWith("serena_")) return enqueueIntegration("serena", invokeHandler);
+      if (name.startsWith("roblox_")) return enqueueIntegration("roblox", invokeHandler);
       return invokeHandler();
     };
 
@@ -120,6 +195,7 @@ export const registerAppTool = ((server: McpServer, name: string, toolConfig: un
     [server, name, toolConfig, guardedHandler],
   ) as RegisteredTool | undefined;
   if (!registered) return undefined;
+  if (!toolInventory.has(name)) toolInventory.set(name, integrationKeyForTool(name));
 
   const tools = registeredTools.get(server) ?? new Map<string, RegisteredTool>();
   tools.set(name, registered);

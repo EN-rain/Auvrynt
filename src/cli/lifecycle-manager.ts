@@ -86,6 +86,9 @@ export function applyIntegrationProfile(profiles: IntegrationKey[]): void {
     aseprite: "AUVRYNT_ASEPRITE_ENABLED",
     serena: "AUVRYNT_SERENA_INTEGRATION_ENABLED",
     playwright: "AUVRYNT_PLAYWRIGHT_ENABLED",
+    context7: "AUVRYNT_CONTEXT7_ENABLED",
+    obsidian: "AUVRYNT_OBSIDIAN_ENABLED",
+    roblox: "AUVRYNT_ROBLOX_ENABLED",
   };
   for (const key of INTEGRATION_KEYS) {
     process.env[environmentKeys[key]] = selected.has(key) ? "true" : "false";

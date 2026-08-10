@@ -61,7 +61,17 @@ Auvrynt uses a single-user OAuth approval flow.
 | `AUVRYNT_OAUTH_ACCESS_TOKEN_TTL_SECONDS` | `3600` |
 | `AUVRYNT_OAUTH_REFRESH_TOKEN_TTL_SECONDS` | `2592000` |
 | `AUVRYNT_OAUTH_SCOPES` | `auvrynt:read,auvrynt:write,auvrynt:process,auvrynt:web,auvrynt:software,auvrynt:godot,auvrynt:blender,auvrynt:aseprite,auvrynt:serena` |
-| `AUVRYNT_OAUTH_ALLOWED_REDIRECT_HOSTS` | `grok.com,console.x.ai,chatgpt.com,claude.ai,claude.com,anthropic.com,oauth.lovable.app,lovable.app,lovable.dev,api.lovable.dev,bolt.new,localhost,127.0.0.1` |
+| `AUVRYNT_OAUTH_ALLOWED_REDIRECT_HOSTS` | `grok.com,console.x.ai,chatgpt.com,claude.ai,claude.com,anthropic.com,oauth.lovable.app,lovable.app,lovable.dev,api.lovable.dev,bolt.new,clusy.io,app.clusy.io,docs.clusy.io,localhost,127.0.0.1` |
+
+### Header-only MCP clients (Clusy and similar)
+
+Some hosts only support **Streamable HTTP + custom headers** and never open the browser `/authorize` page. For those clients, Auvrynt accepts the **Owner token** as a Bearer access token:
+
+```text
+Authorization: Bearer <AUVRYNT_OWNER_TOKEN>
+```
+
+That grant uses client id `auvrynt-owner-bearer` and the configured `AUVRYNT_OAUTH_SCOPES`. Prefer OAuth for Grok/Claude/ChatGPT; use Owner Bearer only for header-only hosts. Rotate the Owner token (`auvrynt token reset`) if it is ever exposed.
 
 `auvrynt:blender-python` is intentionally **not** granted by default. Add it to `AUVRYNT_OAUTH_SCOPES` only when a trusted client must use the arbitrary Blender Python escape hatch. Auvrynt enforces scopes per tool call, not only at login.
 

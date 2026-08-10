@@ -26,6 +26,7 @@ const PROCESS_MARKERS: Record<string, string[]> = {
   godot: ["godot.exe", "godot4.exe", "godot"],
   cloudflare_tunnel: ["cloudflared.exe", "cloudflared"],
   serena: ["serena.exe", "serena"],
+  roblox: ["robloxstudiobeta.exe", "robloxstudio.exe", "robloxplayerbeta.exe"],
 };
 
 export const DEFAULT_INTEGRATION_DISCOVERY_CACHE_MS = 10_000;

@@ -55,6 +55,7 @@ import { attachSseHeartbeat } from "./sse-heartbeat.js";
 import { SerenaManager } from "./serena-manager.js";
 import { createMcpServer } from "./server/mcp-server-factory.js";
 import { applyIntegrationProfileUpdate } from "./server/integration-profile-update.js";
+import { syncMcpToolAvailability } from "./server/mcp-tool-registrar.js";
 import { openAiLogicalSessionId } from "./server/openai-session-hint.js";
 import { createWorkspaceChangeTracker } from "./server/workspace-analytics.js";
 import {
@@ -70,11 +71,7 @@ import {
   workspaceAppAssetInfo,
   workspaceAppHtml,
 } from "./server/ui-assets.js";
-import {
-  createDashboardView,
-  dashboardCsp,
-  dashboardHtml,
-} from "./server/dashboard.js";
+import { registerDashboardRoutes } from "./server/dashboard-routes.js";
 
 type Transport = StreamableHTTPServerTransport;
 
@@ -90,6 +87,7 @@ export interface RunningServer {
   app: ReturnType<typeof createMcpExpressApp>;
   config: ServerConfig;
   updateIntegrations(integrations: ServerConfig["integrations"], options?: { serenaExecutable?: string }): Promise<{ updated: boolean; activeRequests: number; activeToolCalls: number; closedSessions: number }>;
+  refreshToolAvailability(): void;
   updateSessionLimit(maxSessions: number): void;
   updateSessionIdleTimeout(timeoutMs: number): void;
   updateWorkspaceRoots(roots: string[]): { updated: boolean; activeToolCalls: number; closedWorkspaces: number };
@@ -133,6 +131,22 @@ export function createServer(config = loadConfig()): RunningServer {
     idleTimeoutMinutes: config.serena.idleTimeoutMinutes,
     maxInstances: config.serena.maxInstances,
   });
+  // Populate the tool inventory at startup so the dashboard tool settings view
+  // shows every registered tool before any MCP client connects. Without this,
+  // the inventory stays empty until a session initializes (registerAppTool is
+  // otherwise only invoked from createMcpServer, which runs per session).
+  // The throwaway server is never connected; only its registrations matter.
+  // Sessions created later register the same names idempotently.
+  void createMcpServer(
+    config,
+    workspaces,
+    reviewCheckpoints,
+    serenaManager,
+    processManager,
+    roomRegistry,
+    sessionRegistry,
+    workspaceChanges,
+  );
   let activeMcpRequests = 0;
   let activeToolCalls = 0;
   let lastMcpActivityAt: number | undefined;
@@ -189,20 +203,13 @@ export function createServer(config = loadConfig()): RunningServer {
     workspaceChanges: workspaceChanges.snapshot(),
   });
 
-  app.get("/dashboard", async (req, res) => {
-    if (!isLoopbackRequest(req)) {
-      res.status(404).end();
-      return;
-    }
-    const nonce = randomBytes(18).toString("base64url");
-    res.setHeader("Cache-Control", "no-store");
-    res.setHeader("X-Frame-Options", "DENY");
-    res.setHeader("X-Content-Type-Options", "nosniff");
-    res.setHeader("Referrer-Policy", "no-referrer");
-    res.setHeader("Content-Security-Policy", dashboardCsp(nonce));
-    const view = await createDashboardView(config, dashboardSnapshot());
-    res.type("html").send(dashboardHtml(view, nonce));
+  registerDashboardRoutes({
+    app,
+    config,
+    snapshot: dashboardSnapshot,
+    nonce: () => randomBytes(18).toString("base64url"),
   });
+
   app.get("/tool-card-preview", (req, res) => {
     if (!isLoopbackRequest(req)) {
       res.status(404).end();
@@ -232,15 +239,6 @@ export function createServer(config = loadConfig()): RunningServer {
       html: workspaceAppHtml(config),
       assets: workspaceAppAssetInfo(config),
     });
-  });
-
-  app.get("/dashboard/data", async (req, res) => {
-    res.setHeader("Cache-Control", "no-store");
-    if (!isLoopbackRequest(req)) {
-      res.status(404).end();
-      return;
-    }
-    res.json(await createDashboardView(config, dashboardSnapshot()));
   });
 
   app.get("/healthz", (req, res) => {
@@ -668,6 +666,11 @@ export function createServer(config = loadConfig()): RunningServer {
         activeToolCalls: 0,
         closedSessions: 0,
       };
+    },
+    refreshToolAvailability() {
+      for (const record of sessionRegistry.allRecords()) {
+        syncMcpToolAvailability(record.mcpServer, config);
+      }
     },
     async close() {
       if (closed) return;
