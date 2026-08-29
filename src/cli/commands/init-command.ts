@@ -8,8 +8,10 @@ import {
   writeAuvryntAuth,
   writeAuvryntConfig,
   type AuvryntUserConfig,
+  type AuvryntAuthConfig,
 } from "../../user-config.js";
 import { httpUrl } from "../runtime-support.js";
+import { isCloudflaredProcessRunning, findCloudflaredExecutable, spawnUserCloudflaredProcess } from "../../tunnels/cloudflared-service.js";
 
 class SetupCancelledError extends Error {}
 
@@ -59,6 +61,18 @@ function normalizePublicBaseUrl(value: string): string {
   parsed.search = "";
   parsed.pathname = parsed.pathname.replace(/\/+$/, "");
   return parsed.toString().replace(/\/$/, "");
+}
+
+async function probeCustomUrl(url: string): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(`${url}/healthz`, { signal: controller.signal });
+    clearTimeout(timeout);
+    return res.ok || res.status === 404 || res.status === 401;
+  } catch {
+    return false;
+  }
 }
 
 export async function ensureConfigured(options: { directoryScoped?: boolean } = {}): Promise<void> {
@@ -138,13 +152,39 @@ export async function runInitCommand({ force }: { force: boolean }): Promise<voi
       validate: validateRequiredPublicBaseUrl,
     }));
 
+    let cloudflareTunnelToken = files.auth.cloudflareTunnelToken;
+    const tokenAnswer = await textPrompt({
+      message: "Cloudflare Named Tunnel token (optional; press Enter to skip if managed externally)",
+      placeholder: "paste token or press Enter to skip",
+      defaultValue: cloudflareTunnelToken ?? "",
+    });
+    if (tokenAnswer) cloudflareTunnelToken = tokenAnswer;
+
+    const s = prompts.spinner();
+    s.start("Checking tunnel and public URL connectivity...");
+    
+    if (cloudflareTunnelToken && !isCloudflaredProcessRunning() && findCloudflaredExecutable()) {
+      spawnUserCloudflaredProcess(cloudflareTunnelToken);
+    }
+
+    const isReachable = await probeCustomUrl(publicBaseUrl);
+    if (isReachable) {
+      s.stop("✓ Public URL is reachable and responding.");
+    } else {
+      s.stop("ℹ Public URL not reachable yet. Auvrynt will auto-connect when the tunnel starts.");
+    }
+
     const config: AuvryntUserConfig = {
       host: files.config.host ?? "127.0.0.1",
       port,
       allowedRoots,
       publicBaseUrl,
+      tunnelProvider: "custom",
     };
-    const auth = { ownerToken: files.auth.ownerToken ?? generateOwnerToken() };
+    const auth: AuvryntAuthConfig = {
+      ownerToken: files.auth.ownerToken ?? generateOwnerToken(),
+      ...(cloudflareTunnelToken ? { cloudflareTunnelToken } : {}),
+    };
     const configPath = writeAuvryntConfig(config);
     const authPath = writeAuvryntAuth(auth);
     prompts.note([

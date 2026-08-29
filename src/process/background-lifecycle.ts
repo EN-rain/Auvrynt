@@ -84,12 +84,12 @@ export function parseIntegrationProfiles(args: string[]): IntegrationKey[] {
     .flatMap((arg) => arg.split(/[\s,]+/))
     .map((value) => value.trim().toLowerCase())
     .filter(Boolean);
-  if (tokens.length === 0) throw new Error("Choose at least one profile: model, pixel, web, godotcs, godotgd, se, or roblox.");
+  if (tokens.length === 0) throw new Error("Choose at least one profile: blender, pixel, web, godotcs, godotgd, se, or roblox.");
 
   const profiles = new Set<IntegrationKey>();
   for (const token of tokens) {
     const profile = START_PROFILE_ALIASES[token];
-    if (!profile) throw new Error(`Unknown start profile: ${token}. Use model, pixel, web, godotcs, godotgd, se, or roblox.`);
+    if (!profile) throw new Error(`Unknown start profile: ${token}. Use blender, pixel, web, godotcs, godotgd, se, or roblox.`);
     profiles.add(profile);
   }
   return [...profiles];

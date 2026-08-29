@@ -4,6 +4,8 @@ import { markActiveNgrokAuthtokenQuotaExceeded } from "../infrastructure/ngrok-a
 import { logEvent } from "../logger.js";
 import { tunnelProviderLabel, tunnelUrlMatchesProvider } from "../tunnels/tunnel-manager.js";
 import { httpUrl } from "./runtime-support.js";
+import { loadAuvryntFiles } from "../user-config.js";
+import { isCloudflaredProcessRunning, findCloudflaredExecutable, spawnUserCloudflaredProcess } from "../tunnels/cloudflared-service.js";
 
 export function isNgrokQuotaExceededResponse(
   status: number,
@@ -80,6 +82,19 @@ export function startTunnelHealthMonitor(config: ServerConfig): void {
             localServerHealthy: true,
             error: error instanceof Error ? error.message : String(error),
           });
+
+          // Self-heal custom Cloudflare named tunnels if disconnected
+          if (config.tunnelProvider === "custom" && process.platform === "win32") {
+            const files = loadAuvryntFiles();
+            const token = files.auth.cloudflareTunnelToken || process.env.CLOUDFLARE_TUNNEL_TOKEN;
+            if (token && !isCloudflaredProcessRunning() && findCloudflaredExecutable()) {
+              logEvent(config.logging, "info", "custom_tunnel_self_heal_reconnect", {
+                publicBaseUrl: config.publicBaseUrl,
+              });
+              spawnUserCloudflaredProcess(token);
+            }
+          }
+
           if (consecutiveTunnelFailures >= failureThreshold && !recoveryWarningShown) {
             recoveryWarningShown = true;
             logEvent(config.logging, "warn", "tunnel_recovery_required", {

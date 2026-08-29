@@ -26,9 +26,6 @@ const PLAYWRIGHT_TOOL_NAMES = new Set([
   "browser_network",
   "browser_evaluate",
   "browser_screenshot",
-  "agent_reach_status",
-  "agent_reach_doctor",
-  "agent_reach_guide",
 ]);
 const GENERIC_GODOT_TOOL_NAMES = new Set(["detect_godot_project", "inspect_godot_scene"]);
 const GODOT_CSHARP_TOOL_MARKERS = ["dotnet", "csharp", "build_solutions", "generate_vscode_config"];
@@ -73,8 +70,8 @@ export function requiredScopesForToolName(name: string): AuvryntScope[] {
   if (name.startsWith("serena_")) return ["auvrynt:serena"];
   if (name.startsWith("roblox_")) return ["auvrynt:roblox"];
   if (name.startsWith("context7_")) return ["auvrynt:read"];
-  if (name === "agent_reach_doctor") return ["auvrynt:web", "auvrynt:process"];
-  if (name.startsWith("agent_reach_")) return ["auvrynt:web"];
+  if (name === "agent_reach_doctor") return ["auvrynt:process"];
+  if (name.startsWith("agent_reach_")) return ["auvrynt:read"];
   if (name === "obsidian_write_note") return ["auvrynt:write"];
   if (name.startsWith("obsidian_")) return ["auvrynt:read"];
   if (name === "start_dev_server") return ["auvrynt:web", "auvrynt:process"];
@@ -136,7 +133,8 @@ export function toolIntegrationEnabled(config: ServerConfig, name: string): bool
   if (name.startsWith("blender_")) return config.integrations.blender;
   if (name.startsWith("aseprite_")) return config.integrations.aseprite;
   if (isGodotToolName(name)) return godotIntegrationEnabled(config, name);
-  if (PLAYWRIGHT_TOOL_NAMES.has(name) || name.startsWith("agent_reach_")) return config.integrations.playwright;
+  if (PLAYWRIGHT_TOOL_NAMES.has(name)) return config.integrations.playwright;
+  if (name.startsWith("agent_reach_")) return true;
   if (name.startsWith("serena_")) return config.integrations.serena && config.serena.enabled;
   if (name.startsWith("context7_")) return config.integrations.context7;
   if (name.startsWith("obsidian_")) return config.integrations.obsidian;

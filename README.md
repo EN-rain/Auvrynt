@@ -113,7 +113,7 @@ Profiles are session-only: an explicit profile argument enables only those integ
 
 ```bash
 # One integration
-auvrynt start model      # Blender MCP port detection
+auvrynt start blender      # Blender MCP port detection
 auvrynt start pixel      # Aseprite native CLI/Lua tools
 auvrynt start web        # Playwright/browser tools + Agent Reach helpers
 auvrynt start godotcs    # Godot C#
@@ -121,7 +121,7 @@ auvrynt start godotgd    # Godot GDScript
 auvrynt start se         # Serena
 
 # Multiple integrations
-auvrynt start model,godotcs
+auvrynt start blender,godotcs
 
 # Add an integration live; neither the server nor tunnel restarts
 auvrynt add web
@@ -188,7 +188,7 @@ Authorization is required again after `auvrynt token reset` or any operation tha
 |---|---|
 | `auvrynt init` | Run first-time setup or update your config |
 | `auvrynt start [profiles]` | Start one managed background instance scoped to the current directory |
-| `auvrynt start model,web` | Start selected profiles: `model`, `web`, `godotcs`, `godotgd`, `se` |
+| `auvrynt start blender,web` | Start selected profiles: `model`, `web`, `godotcs`, `godotgd`, `se` |
 | `auvrynt start ... --replace` | Live-replace profiles, or switch the managed workspace without changing the tunnel |
 | `auvrynt add <profiles>` | Add profiles live without restarting the server or tunnel |
 | `auvrynt change` | Switch the running workspace to the current directory while preserving profiles and tunnel URL |
