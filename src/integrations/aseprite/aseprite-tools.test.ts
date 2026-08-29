@@ -10,12 +10,12 @@ import {
   asepriteAuditSprite,
   asepriteCompareDocuments,
   asepriteReadPixels,
-} from "./integrations/aseprite/aseprite-analysis-tools.js";
-import { asepriteFileSafety } from "./integrations/aseprite/aseprite-safety-tools.js";
-import { getAsepriteBridgeRuntimeStatus } from "./integrations/aseprite/aseprite-live-tools.js";
-import { asepriteManageTilemap } from "./integrations/aseprite/aseprite-specialized-tools.js";
+} from "./aseprite-analysis-tools.js";
+import { asepriteFileSafety } from "./aseprite-safety-tools.js";
+import { getAsepriteBridgeRuntimeStatus } from "./aseprite-live-tools.js";
+import { asepriteManageTilemap } from "./aseprite-specialized-tools.js";
 import { getAsepritePalettePreset, resolveAsepriteExecutable } from "./aseprite-tools.js";
-import { toolIntegrationEnabled } from "./server/mcp-policy.js";
+import { toolIntegrationEnabled } from "../../server/mcp-policy.js";
 import { WorkspaceRegistry } from "../../workspace/workspaces.js";
 
 const workspace = await mkdtemp(join(tmpdir(), "auvrynt-aseprite-tools-"));

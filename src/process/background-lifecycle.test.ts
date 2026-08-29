@@ -30,7 +30,7 @@ assert.throws(() => parseStartRequest(["model", "--no-integrations"]), /Do not c
 assert.throws(() => parseIntegrationProfiles(["unknown"]), /Unknown start profile/);
 assert.throws(() => parseStartRequest(["--unknown"]), /Unknown start option/);
 
-const lifecycleSource = await readFile(new URL("./cli/lifecycle-manager.ts", import.meta.url), "utf8");
+const lifecycleSource = await readFile(new URL("../cli/lifecycle-manager.ts", import.meta.url), "utf8");
 const hardRestartBlock = lifecycleSource.match(/if \(hard\) \{([\s\S]*?)\n    \}\n    const config = loadConfig\(\);/)?.[1] ?? "";
 assert.ok(hardRestartBlock, "hard-restart implementation must remain discoverable");
 assert.doesNotMatch(hardRestartBlock, /await stop\(\)/, "hard restart should use the locked lifecycle path directly");

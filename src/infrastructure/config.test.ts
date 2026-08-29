@@ -124,6 +124,7 @@ assert.deepEqual(loadConfig(baseEnv).oauth.scopes, [
   "auvrynt:blender",
   "auvrynt:aseprite",
   "auvrynt:serena",
+  "auvrynt:roblox",
 ]);
 assert.deepEqual(loadConfig(baseEnv).oauth.allowedRedirectHosts, [
   "grok.com",

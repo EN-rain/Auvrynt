@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { checkSqliteNative } from "./cli/commands/status-commands.js";
+import { checkSqliteNative } from "../cli/commands/status-commands.js";
 
 assert.equal(
   checkSqliteNative(),

@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { processDetected, type LocalIntegrationDiscovery } from "./integration-discovery.js";
-import { findGodotProjectRoots } from "./cli/integration-bootstrap.js";
+import { findGodotProjectRoots } from "../cli/integration-bootstrap.js";
 
 const discovery: LocalIntegrationDiscovery = {
   processes: ["blender.exe", "aseprite.exe", "cloudflared.exe", "serena.exe"],
