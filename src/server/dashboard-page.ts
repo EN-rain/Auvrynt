@@ -173,7 +173,7 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
         <section class="dashboard-view" id="view-secrets" role="tabpanel" aria-labelledby="tab-secrets" data-view-panel="secrets" hidden>
           <div class="secrets-layout">
             <section class="section-surface" aria-labelledby="secret-add-title">
-              <div class="section-head"><div><h2 id="secret-add-title">Add ngrok authtoken</h2><p>Values stay in the private local Auvrynt auth file and are never returned to this page.</p></div></div>
+              <div class="section-head"><div><h2 id="secret-add-title">Add ngrok authtoken</h2><p>Values stay in the private local Auvrynt auth file. Copy the current secret only when you explicitly request it.</p></div><button class="button section-action" id="copy-ngrok-secret" type="button" title="Copy current ngrok secret" aria-label="Copy current ngrok secret">Copy secret</button></div>
               <form class="secret-form" id="ngrok-token-form" autocomplete="off">
                 <label class="secret-label" for="ngrok-token-input">ngrok authtoken</label>
                 <div class="secret-input-row"><input class="secret-input" id="ngrok-token-input" type="password" minlength="16" maxlength="512" spellcheck="false" autocomplete="new-password" placeholder="Paste a backup authtoken" /><button class="button primary" id="add-ngrok-token" type="submit">Add token</button></div>
@@ -255,6 +255,7 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
         const ngrokTokenForm = document.getElementById("ngrok-token-form");
         const ngrokTokenInput = document.getElementById("ngrok-token-input");
         const addNgrokTokenButton = document.getElementById("add-ngrok-token");
+        const copyNgrokSecretButton = document.getElementById("copy-ngrok-secret");
         const ngrokTokenList = document.getElementById("ngrok-token-list");
         const ngrokEnvironmentWarning = document.getElementById("ngrok-environment-warning");
         const context7KeyForm = document.getElementById("context7-key-form");
@@ -571,6 +572,7 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
         function renderNgrok() {
           const ngrok = state.ngrok;
           document.getElementById("nav-token-count").textContent = String(ngrok.tokens.length);
+          copyNgrokSecretButton.disabled = !ngrok.enabled && !ngrok.environmentOverride;
           ngrokEnvironmentWarning.hidden = !ngrok.environmentOverride;
           const noticeData = ngrok.notice;
           tunnelAlert.hidden = !noticeData;
@@ -1232,6 +1234,18 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
               ngrokTokenInput.disabled = false;
               setButtonBusy(addNgrokTokenButton, false, "");
             }
+          }
+        });
+
+        copyNgrokSecretButton.addEventListener("click", async () => {
+          setButtonBusy(copyNgrokSecretButton, true, "Copying");
+          try {
+            const result = await postAction("/__auvrynt/dashboard/ngrok-tokens", { action: "copy" });
+            await copyText(result.token, copyNgrokSecretButton, "ngrok secret copied.");
+          } catch (error) {
+            showToast(error instanceof Error ? error.message : String(error), "error");
+          } finally {
+            if (!lifecycleMode) setButtonBusy(copyNgrokSecretButton, false, "");
           }
         });
 

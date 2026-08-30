@@ -18,6 +18,7 @@ import {
 import {
   activateNgrokAuthtoken,
   addNgrokAuthtoken,
+  getCurrentNgrokAuthtoken,
   removeNgrokAuthtoken,
 } from "../infrastructure/ngrok-auth-pool.js";
 import {
@@ -244,6 +245,18 @@ export function registerDashboardActions({
   app.post("/__auvrynt/dashboard/ngrok-tokens", async (req, res) => {
     if (rejectUnauthorized(req, res) || rejectRateLimited(res)) return;
     const body = req.body as { action?: unknown; token?: unknown; index?: unknown };
+    if (body.action === "copy") {
+      const token = getCurrentNgrokAuthtoken();
+      if (!token) {
+        res.status(404).json({ error: "No current ngrok authtoken is configured." });
+        return;
+      }
+      logEvent(config.logging, "info", "dashboard_ngrok_token_copied", {
+        source: process.env.AUVRYNT_NGROK_AUTHTOKEN?.trim() ? "environment" : "saved_pool",
+      });
+      res.json({ token, message: "Current ngrok secret copied." });
+      return;
+    }
     if (body.action !== "add" && body.action !== "remove" && body.action !== "activate") {
       res.status(400).json({ error: "Invalid ngrok token action." });
       return;

@@ -50,6 +50,10 @@ Connect once, then ask your AI to:
 npm install -g auvrynt
 ```
 
+The global launcher checks that the CLI bundle is present before starting. If a
+linked development checkout is incomplete, it builds the checkout automatically;
+otherwise it repairs the package installation from npm and retries once.
+
 **Set up and start:**
 
 ```bash

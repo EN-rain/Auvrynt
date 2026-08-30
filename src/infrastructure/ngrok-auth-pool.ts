@@ -67,6 +67,13 @@ export function resolveNgrokAuthtoken(
   return pool.activeIndex === null ? undefined : pool.tokens[pool.activeIndex];
 }
 
+export function getCurrentNgrokAuthtoken(
+  files: AuvryntFiles = loadAuvryntFiles(),
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  return resolveNgrokAuthtoken(files, env);
+}
+
 export function summarizeNgrokAuthtokens(
   files: AuvryntFiles = loadAuvryntFiles(),
   env: NodeJS.ProcessEnv = process.env,

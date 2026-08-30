@@ -8,9 +8,10 @@
     "node": ">=20.12 <27"
   },
   "bin": {
-    "auvrynt": "dist/cli.js"
+    "auvrynt": "bin/auvrynt-launcher.cjs"
   },
   "files": [
+    "bin",
     "dist",
     "docs",
     "guides",

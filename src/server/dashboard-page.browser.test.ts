@@ -107,8 +107,10 @@ let workspacePickerRequests = 0;
 let sessionLimitRequests = 0;
 let sessionIdleTimeoutRequests = 0;
 let ngrokTokenRequests = 0;
+let ngrokCopyRequests = 0;
 let toolToggleRequests = 0;
 let selectedWorkspacePath: string | undefined;
+const currentNgrokToken = "2abc_current_ngrok_auth_token_123456789";
 
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -128,10 +130,16 @@ const server = createServer(async (request, response) => {
     return;
   }
   if (request.method === "POST" && url.pathname === "/__auvrynt/dashboard/ngrok-tokens") {
-    ngrokTokenRequests++;
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { action?: string };
+    if (body.action === "copy") {
+      ngrokCopyRequests++;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ token: currentNgrokToken, message: "Current ngrok secret copied." }));
+      return;
+    }
+    ngrokTokenRequests++;
     if (body.action === "add") {
       view.ngrok.tokens.push({ index: 2, fingerprint: "9F21D7A400", active: false });
     }
@@ -308,10 +316,16 @@ try {
     assert.equal(await page.locator("#page-title").textContent(), "Secrets");
     assert.equal(await page.locator("#view-secrets").isVisible(), true);
     assert.equal(await page.locator("#ngrok-token-input").getAttribute("type"), "password");
+    assert.equal(await page.locator("#copy-ngrok-secret").isVisible(), true);
     assert.equal(await page.locator(".token-row").count(), 2);
     assert.equal(await page.locator("#ngrok-token-list").getByText("4A8F71C2B0", { exact: true }).count(), 1);
     assert.equal(await page.locator("#ngrok-token-list").getByText("70C93D15AA", { exact: true }).count(), 1);
     assert.equal((await page.locator("body").textContent() ?? "").includes("2abc_"), false, `${viewport.name}: raw token material must not be rendered`);
+    await page.locator("#copy-ngrok-secret").click();
+    await page.waitForFunction(() => document.querySelector("#action-notice")?.textContent === "ngrok secret copied.");
+    assert.equal(ngrokCopyRequests, viewport.name === "desktop" ? 1 : viewport.name === "tablet" ? 2 : 3);
+    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), currentNgrokToken);
+    assert.equal((await page.locator("body").textContent() ?? "").includes(currentNgrokToken), false, `${viewport.name}: copied raw token must not be rendered`);
 
     await page.locator("#tab-connectivity").click();
     assert.equal(await page.locator("#page-title").textContent(), "Connectivity");
