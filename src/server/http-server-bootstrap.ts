@@ -25,6 +25,44 @@ export function registerOAuthRateLimits(app: Express): void {
   }));
 }
 
+export function registerOAuthTokenBasicAuth(app: Express): void {
+  app.use("/token", express.urlencoded({ extended: false }));
+  app.use("/token", (req, _res, next) => {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.toLowerCase().startsWith("basic ")) {
+      try {
+        const credentials = Buffer.from(authHeader.slice(6).trim(), "base64").toString("utf8");
+        const colonIndex = credentials.indexOf(":");
+        if (colonIndex !== -1) {
+          const rawId = credentials.slice(0, colonIndex);
+          const rawSecret = credentials.slice(colonIndex + 1);
+          let clientId: string;
+          let clientSecret: string;
+          try {
+            clientId = decodeURIComponent(rawId);
+            clientSecret = decodeURIComponent(rawSecret);
+          } catch {
+            clientId = rawId;
+            clientSecret = rawSecret;
+          }
+          if (!req.body || typeof req.body !== "object") {
+            req.body = {};
+          }
+          if (!req.body.client_id) {
+            req.body.client_id = clientId;
+          }
+          if (!req.body.client_secret && clientSecret) {
+            req.body.client_secret = clientSecret;
+          }
+        }
+      } catch {
+        // Let downstream token handler handle invalid auth
+      }
+    }
+    next();
+  });
+}
+
 export function registerStaticAssets(app: Express): void {
   app.options("/mcp-app-assets/{*asset}", (_req, res) => {
     setAssetHeaders(res);

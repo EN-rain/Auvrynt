@@ -105,6 +105,25 @@ try {
   assert.deepEqual(ownerBearer.scopes, ["auvrynt:read", "auvrynt:web"]);
   await assert.rejects(() => restarted.verifyAccessToken("wrong-owner-token"));
 
+  // Empty scopes test: clients (like Gemini) may omit scopes or submit empty string, which should fall back to configured scopes without error
+  let emptyScopeRedirect = "";
+  await first.authorize(registered, {
+    redirectUri: "http://localhost:43119/callback",
+    codeChallenge: "test-challenge-empty",
+    scopes: [""],
+    state: "test-state-empty",
+  }, {
+    req: { method: "POST", body: { owner_token: config.ownerToken } },
+    redirect: (_status: number, location: string) => {
+      emptyScopeRedirect = location;
+    },
+  } as any);
+  const emptyScopeCode = new URL(emptyScopeRedirect).searchParams.get("code");
+  assert.ok(emptyScopeCode);
+  const emptyScopeTokens = await first.exchangeAuthorizationCode(registered, emptyScopeCode);
+  const emptyScopeAuthInfo = await first.verifyAccessToken(emptyScopeTokens.access_token);
+  assert.deepEqual(emptyScopeAuthInfo.scopes, config.scopes);
+
   // Gemini compatibility test: dynamic registration and static client with exact user redirect URI
   const geminiStore = new InMemoryOAuthClientsStore(["googleusercontent.com", "google.com"]);
   const geminiRegistered = geminiStore.registerClient(

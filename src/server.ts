@@ -73,8 +73,9 @@ import {
   workspaceAppAssetInfo,
   workspaceAppHtml,
 } from "./server/ui-assets.js";
-import { registerOAuthRateLimits, registerStaticAssets } from "./server/http-server-bootstrap.js";
+import { registerOAuthRateLimits, registerOAuthTokenBasicAuth, registerStaticAssets } from "./server/http-server-bootstrap.js";
 import { registerDashboardRoutes } from "./server/dashboard-routes.js";
+import { executeWorkspaceRootsUpdate } from "./server/workspace-roots-update.js";
 import { JobsStore } from "./jobs/store.js"; import { FacebookOAuthManager } from "./jobs/integrations/facebook/facebook-oauth.js";
 import { shutdownCodexOrchestrator } from "./integrations/codex/codex-orchestrator.js";
 type Transport = StreamableHTTPServerTransport;
@@ -184,42 +185,7 @@ export function createServer(config = loadConfig()): RunningServer {
     next();
   });
   registerOAuthRateLimits(app);
-  // Support RFC 6749 Section 2.3.1 HTTP Basic authentication for OAuth token requests
-  app.use("/token", express.urlencoded({ extended: false }));
-  app.use("/token", (req, _res, next) => {
-    const authHeader = req.headers.authorization;
-    if (authHeader && authHeader.toLowerCase().startsWith("basic ")) {
-      try {
-        const credentials = Buffer.from(authHeader.slice(6).trim(), "base64").toString("utf8");
-        const colonIndex = credentials.indexOf(":");
-        if (colonIndex !== -1) {
-          const rawId = credentials.slice(0, colonIndex);
-          const rawSecret = credentials.slice(colonIndex + 1);
-          let clientId: string;
-          let clientSecret: string;
-          try {
-            clientId = decodeURIComponent(rawId);
-            clientSecret = decodeURIComponent(rawSecret);
-          } catch {
-            clientId = rawId;
-            clientSecret = rawSecret;
-          }
-          if (!req.body || typeof req.body !== "object") {
-            req.body = {};
-          }
-          if (!req.body.client_id) {
-            req.body.client_id = clientId;
-          }
-          if (!req.body.client_secret && clientSecret) {
-            req.body.client_secret = clientSecret;
-          }
-        }
-      } catch {
-        // Let downstream token handler handle invalid auth
-      }
-    }
-    next();
-  });
+  registerOAuthTokenBasicAuth(app);
   app.use("/.well-known/openid-configuration", (req, _res, next) => { req.url = "/.well-known/oauth-authorization-server"; next(); });
   app.use(
     mcpAuthRouter({
@@ -231,6 +197,9 @@ export function createServer(config = loadConfig()): RunningServer {
       resourceName: "Auvrynt",
       // Auvrynt applies its own rate limit above; disable SDK's duplicate limiter.
       clientRegistrationOptions: { rateLimit: false },
+      authorizationOptions: { rateLimit: false },
+      tokenOptions: { rateLimit: false },
+      revocationOptions: { rateLimit: false },
     }),
   );
   registerStaticAssets(app);
@@ -713,42 +682,11 @@ export function createServer(config = loadConfig()): RunningServer {
       config.maxSessionsPerClient = limits.maxSessionsPerClient;
     },
     updateSessionIdleTimeout(timeoutMs) { sessionRegistry.updateSessionIdleTimeout(timeoutMs); config.sessionIdleTimeoutMs = timeoutMs; },
-    async updateWorkspaceRoots(roots) {
-      if (activeToolCalls > 0) {
-        return { updated: false, activeToolCalls, closedWorkspaces: 0, resourceCleanupFailures: 0 };
-      }
-      const closedWorkspaceIds = workspaces.replaceAllowedRoots(roots);
-      let resourceCleanupFailures = 0;
-      for (const workspaceId of closedWorkspaceIds) {
-        try {
-          await cleanupWorkspaceResources(workspaceId, processManager, serenaManager);
-        } catch (error) {
-          resourceCleanupFailures++;
-          logEvent(config.logging, "error", "workspace_resource_cleanup_failed", {
-            workspaceId,
-            reason: "allowed_roots_updated",
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-        try {
-          await reviewCheckpoints.releaseWorkspace({ workspaceId });
-        } catch (error) {
-          logEvent(config.logging, "warn", "review_checkpoint_release_failed", {
-            workspaceId,
-            reason: "allowed_roots_updated",
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-        roomRegistry.closeWorkspace(workspaceId);
-        sessionRegistry.unbindWorkspaceEverywhere(workspaceId);
-        workspaceChanges.deactivateWorkspace(workspaceId);
-      }
-      return {
-        updated: true,
-        activeToolCalls: 0,
-        closedWorkspaces: closedWorkspaceIds.length,
-        resourceCleanupFailures,
-      };
+    updateWorkspaceRoots(roots) {
+      return executeWorkspaceRootsUpdate(roots, {
+        activeToolCalls, config, workspaces, processManager, serenaManager,
+        reviewCheckpoints, roomRegistry, sessionRegistry, workspaceChanges,
+      });
     },
     async updateIntegrations(integrations, options) {
       if (activeToolCalls > 0) {

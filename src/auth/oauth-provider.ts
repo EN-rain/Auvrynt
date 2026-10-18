@@ -218,15 +218,6 @@ ${hiddenFields}
               approve.setAttribute('aria-busy', 'true');
             }
             status.textContent = 'Approval submitted. Returning to your web agent...';
-            var dashboardUrl = 'http://127.0.0.1:49321/dashboard';
-            var dashboard = window.open(dashboardUrl, '_blank', 'noopener,noreferrer');
-            if (!dashboard) status.textContent = 'Approved. Your browser blocked the dashboard tab; open ' + dashboardUrl + ' manually.';
-            window.setTimeout(function() {
-              if (!approve || approve.textContent !== 'Approving...') return;
-              approve.textContent = 'Approve connection';
-              approve.removeAttribute('aria-busy');
-              status.textContent = 'Still waiting for the web agent callback. Keep this page open, then retry if the web agent does not finish connecting.';
-            }, 8000);
           });
         }
       })();
@@ -236,7 +227,8 @@ ${hiddenFields}
 }
 
 function requestedScopesAllowed(requested: string[], supported: string[]): boolean {
-  return requested.every((scope) => supported.includes(scope));
+  const clean = requested.filter((s) => s.trim().length > 0);
+  return clean.every((scope) => supported.includes(scope));
 }
 
 function redirectHostAllowed(redirectUri: string, allowedHosts: string[]): boolean {
@@ -452,9 +444,14 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
       throw new InvalidRequestError("Invalid or missing OAuth resource");
     }
     params = { ...params, resource: requestedResource };
-    if (!requestedScopesAllowed(params.scopes ?? [], this.config.scopes)) {
+    const effectiveScopes = (params.scopes ?? []).filter((s) => s.trim().length > 0);
+    if (!requestedScopesAllowed(effectiveScopes, this.config.scopes)) {
       throw new InvalidRequestError("Requested scope is not supported");
     }
+    params = {
+      ...params,
+      scopes: effectiveScopes.length > 0 ? effectiveScopes : this.config.scopes,
+    };
 
     const req = res.req as Request;
     const queryError = req.query?.error as string | undefined;
@@ -758,13 +755,14 @@ function authorizationFormFields(
   client: OAuthClientInformationFull,
   params: AuthorizationParams,
 ): Record<string, string | undefined> {
+  const cleanScopes = (params.scopes ?? []).filter((s) => s.trim().length > 0);
   return {
     response_type: "code",
     client_id: client.client_id,
     redirect_uri: params.redirectUri,
     code_challenge: params.codeChallenge,
     code_challenge_method: "S256",
-    scope: params.scopes?.join(" "),
+    scope: cleanScopes.length > 0 ? cleanScopes.join(" ") : undefined,
     state: params.state,
     resource: params.resource?.href,
   };
