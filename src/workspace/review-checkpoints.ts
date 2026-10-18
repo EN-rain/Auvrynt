@@ -36,6 +36,7 @@ interface WorkspaceReviewState {
 
 export interface ReviewCheckpointManager {
   initializeWorkspace(input: { workspaceId: string; root: string }): Promise<void>;
+  releaseWorkspace(input: { workspaceId: string }): Promise<void>;
   reviewChanges(input: {
     workspaceId: string;
     root: string;
@@ -68,6 +69,23 @@ export function createReviewCheckpointManager(): ReviewCheckpointManager {
         await git(eligibility.gitRoot, ["update-ref", state.baselineRef, commit]);
       } catch (error) {
         state.diagnostic = error instanceof Error ? error.message : String(error);
+      }
+    },
+
+    async releaseWorkspace({ workspaceId }) {
+      const state = states.get(workspaceId);
+      states.delete(workspaceId);
+      if (!state?.gitRoot) return;
+      const results = await Promise.allSettled([
+        git(state.gitRoot, ["update-ref", "-d", state.openRef]),
+        git(state.gitRoot, ["update-ref", "-d", state.baselineRef]),
+      ]);
+      const failures = results.filter((result) => result.status === "rejected");
+      if (failures.length > 0) {
+        throw new AggregateError(
+          failures.map((result) => (result as PromiseRejectedResult).reason),
+          `Failed to delete ${failures.length} review checkpoint ref(s) for workspace ${workspaceId}.`,
+        );
       }
     },
 

@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import { closeSync, existsSync, openSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { copyFile, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { isProcessRunning } from "../background-lifecycle.js";
 import type { TunnelProcess } from "./tunnel-types.js";
 import { findCommand } from "./tunnel-utils.js";
@@ -81,6 +81,60 @@ async function resolveCloudflaredExecutable(): Promise<string> {
   throw new Error(
     "cloudflared is required for `auvrynt start`. Install it from https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/.",
   );
+}
+
+export async function loginCloudflareAccount(certPath: string): Promise<void> {
+  const executable = await resolveCloudflaredExecutable();
+  await mkdir(dirname(certPath), { recursive: true, mode: 0o700 });
+  const defaultCertPath = join(homedir(), ".cloudflared", "cert.pem");
+  const sameAsDefault = defaultCertPath.toLowerCase() === certPath.toLowerCase();
+  const suffix = `.auvrynt-login-backup-${process.pid}-${Date.now()}`;
+  const defaultBackupPath = `${defaultCertPath}${suffix}`;
+  const profileBackupPath = `${certPath}${suffix}`;
+  const hadDefaultCertificate = !sameAsDefault && existsSync(defaultCertPath);
+  const hadProfileCertificate = !sameAsDefault && existsSync(certPath);
+  let defaultMoved = false;
+  let profileMoved = false;
+  let completed = false;
+
+  try {
+    if (hadDefaultCertificate) {
+      await rename(defaultCertPath, defaultBackupPath);
+      defaultMoved = true;
+    }
+    if (hadProfileCertificate) {
+      await rename(certPath, profileBackupPath);
+      profileMoved = true;
+    }
+    await runCloudflareLoginProcess(executable, certPath);
+    if (!existsSync(certPath) && existsSync(defaultCertPath)) await copyFile(defaultCertPath, certPath);
+    if (!existsSync(certPath)) throw new Error("Cloudflare login completed without creating the account certificate.");
+    completed = true;
+  } finally {
+    if (!sameAsDefault && existsSync(defaultCertPath) && (defaultMoved || !hadDefaultCertificate)) await unlink(defaultCertPath);
+    if (defaultMoved) await rename(defaultBackupPath, defaultCertPath);
+    if (profileMoved) {
+      if (completed) await unlink(profileBackupPath);
+      else if (!existsSync(certPath)) await rename(profileBackupPath, certPath);
+    }
+  }
+}
+
+async function runCloudflareLoginProcess(executable: string, certPath: string): Promise<void> {
+  await new Promise<void>((resolveLogin, rejectLogin) => {
+    const child = spawn(executable, ["--origincert", certPath, "tunnel", "login"], {
+      stdio: "inherit",
+      windowsHide: true,
+    });
+    child.once("error", rejectLogin);
+    child.once("exit", (code, signal) => {
+      if (code !== 0) {
+        rejectLogin(new Error(`Cloudflare browser login did not complete${signal ? ` (signal ${signal})` : ` (exit code ${code ?? "unknown"})`}.`));
+        return;
+      }
+      resolveLogin();
+    });
+  });
 }
 
 export async function startCloudflareTunnel(

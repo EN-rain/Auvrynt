@@ -4,7 +4,7 @@ import { closeSync, existsSync, fsyncSync, openSync, writeSync } from "node:fs";
 import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-export const INTEGRATION_KEYS = ["godotGdscript", "godotCsharp", "blender", "aseprite", "serena", "playwright", "context7", "obsidian", "roblox"] as const;
+export const INTEGRATION_KEYS = ["godotGdscript", "godotCsharp", "blender", "aseprite", "serena", "solOrchestrator", "playwright", "roblox", "desktop", "krita", "openPencil"] as const;
 export type IntegrationKey = (typeof INTEGRATION_KEYS)[number];
 
 export const INTEGRATION_LABELS: Record<IntegrationKey, string> = {
@@ -13,10 +13,12 @@ export const INTEGRATION_LABELS: Record<IntegrationKey, string> = {
   blender: "Blender",
   aseprite: "Aseprite",
   serena: "Software Development",
+  solOrchestrator: "Sol Orchestrator",
   playwright: "Web Development",
-  context7: "Context7",
-  obsidian: "Obsidian",
   roblox: "Roblox Studio",
+  desktop: "Desktop Use",
+  krita: "Krita Drawing",
+  openPencil: "OpenPencil Design",
 };
 
 const START_PROFILE_ALIASES: Record<string, IntegrationKey> = {
@@ -34,19 +36,47 @@ const START_PROFILE_ALIASES: Record<string, IntegrationKey> = {
   godotgdscript: "godotGdscript",
   se: "serena",
   serena: "serena",
-  context7: "context7",
-  c7: "context7",
-  obsidian: "obsidian",
-  notes: "obsidian",
+  sol: "solOrchestrator",
+  orchestrator: "solOrchestrator",
+  codex: "solOrchestrator",
+  "sol-orchestrator": "solOrchestrator",
+  "codex-orchestrator": "solOrchestrator",
   roblox: "roblox",
   robloxstudio: "roblox",
   rbx: "roblox",
+  desktop: "desktop",
+  "desktop-use": "desktop",
+  desktopuse: "desktop",
+  screen: "desktop",
+  computer: "desktop",
+  "computer-use": "desktop",
+  computeruse: "desktop",
+  krita: "krita",
+  paint: "krita",
+  openpencil: "openPencil",
+  "open-pencil": "openPencil",
+  pencil: "openPencil",
 };
 
 export interface StartRequest {
   profiles?: IntegrationKey[];
   replace: boolean;
   backgroundChild: boolean;
+}
+
+export function profilesFromIntegrationConfig(
+  integrations: Partial<Record<IntegrationKey, boolean>> | undefined,
+): IntegrationKey[] {
+  return INTEGRATION_KEYS.filter((key) => key === "serena"
+    ? integrations?.[key] !== false
+    : integrations?.[key] === true);
+}
+
+export function resolveSavedWorkspaceRoot(
+  config: { workspaceRoot?: string; allowedRoots?: string[] },
+  fallbackRoot: string,
+): string {
+  return resolve(config.workspaceRoot ?? config.allowedRoots?.[0] ?? fallbackRoot);
 }
 
 export interface ProcessIdentity {
@@ -84,12 +114,12 @@ export function parseIntegrationProfiles(args: string[]): IntegrationKey[] {
     .flatMap((arg) => arg.split(/[\s,]+/))
     .map((value) => value.trim().toLowerCase())
     .filter(Boolean);
-  if (tokens.length === 0) throw new Error("Choose at least one profile: model, pixel, web, godotcs, godotgd, se, or roblox.");
+  if (tokens.length === 0) throw new Error("Choose at least one profile: blender, pixel, web, godotcs, godotgd, se, roblox, desktop, or krita.");
 
   const profiles = new Set<IntegrationKey>();
   for (const token of tokens) {
     const profile = START_PROFILE_ALIASES[token];
-    if (!profile) throw new Error(`Unknown start profile: ${token}. Use model, pixel, web, godotcs, godotgd, se, or roblox.`);
+    if (!profile) throw new Error(`Unknown start profile: ${token}. Use blender, pixel, web, godotcs, godotgd, se, roblox, desktop, or krita.`);
     profiles.add(profile);
   }
   return [...profiles];
@@ -103,7 +133,11 @@ export function parseStartRequest(args: string[]): StartRequest {
   if (noIntegrations && profiles.length > 0) throw new Error("Do not combine --no-integrations with start profiles.");
   const unknownOption = profiles.find((arg) => arg.startsWith("--"));
   if (unknownOption) throw new Error(`Unknown start option: ${unknownOption}`);
-  return { profiles: noIntegrations ? [] : profiles.length > 0 ? parseIntegrationProfiles(profiles) : [], replace, backgroundChild };
+  return {
+    profiles: noIntegrations ? [] : profiles.length > 0 ? parseIntegrationProfiles(profiles) : undefined,
+    replace,
+    backgroundChild,
+  };
 }
 
 export function isProcessRunning(pid: number): boolean {

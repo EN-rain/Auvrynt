@@ -6,9 +6,17 @@ import type { WorkspaceRegistry } from "../../workspaces.js";
 import type { ProcessManager } from "../../processes.js";
 import type { ToolResponse } from "../../pi-tools.js";
 import { inlineImageOrNotice } from "../../tool-result-budget.js";
+import { resolveDesktopWindow } from "../desktop/window-resolver.js";
 
 const execFileAsync = promisify(execFile);
 const MAX_WINDOW_TITLE_CHARS = 256;
+
+/**
+ * Window capture is intentionally strict. Sampling the desktop behind a
+ * target window would return pixels from whichever application is covering it
+ * and is never a valid substitute for a target-only frame.
+ */
+export const WINDOW_CAPTURE_FALLBACK_POLICY = "disabled" as const;
 
 export interface CaptureWindowInput {
   workspaceId: string;
@@ -67,6 +75,20 @@ export async function captureWindow(
     }
   }
 
+  let resolvedWindow: Awaited<ReturnType<typeof resolveDesktopWindow>>;
+  try {
+    resolvedWindow = await resolveDesktopWindow({
+      processId: pid,
+      title,
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    return {
+      content: [{ type: "text", text: `Window capture target resolution failed: ${msg}` }],
+      isError: true,
+    };
+  }
+
   const psScript = String.raw`
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
@@ -77,11 +99,25 @@ public static class AuvryntNativeWindow {
     [StructLayout(LayoutKind.Sequential)]
     public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
     [DllImport("user32.dll")]
+    public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+    [DllImport("user32.dll")]
+    public static extern bool IsWindow(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    public static extern bool IsIconic(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int maxCount);
+    [DllImport("user32.dll")]
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
     [DllImport("user32.dll")]
     public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint flags);
 }
 "@
+
+[AuvryntNativeWindow]::SetProcessDpiAwarenessContext([IntPtr](-4)) | Out-Null
 
 function Find-WindowForProcess([int]$RootPid) {
     $queue = [System.Collections.Generic.Queue[int]]::new()
@@ -100,7 +136,23 @@ function Find-WindowForProcess([int]$RootPid) {
 }
 
 $handle = [IntPtr]::Zero
-if ($env:AUVRYNT_CAPTURE_PID) {
+if ($env:AUVRYNT_CAPTURE_HANDLE) {
+    try { $handle = [IntPtr]([Int64]$env:AUVRYNT_CAPTURE_HANDLE) } catch { throw 'Invalid target window handle.' }
+    if (-not [AuvryntNativeWindow]::IsWindow($handle)) { throw 'Target window handle is no longer valid.' }
+    if (-not [AuvryntNativeWindow]::IsWindowVisible($handle)) { throw 'Target window is not visible.' }
+    if ([AuvryntNativeWindow]::IsIconic($handle)) { throw 'Target window is minimized.' }
+    [uint32]$targetPid = 0
+    [AuvryntNativeWindow]::GetWindowThreadProcessId($handle, [ref]$targetPid) | Out-Null
+    if ($env:AUVRYNT_CAPTURE_PID -and $targetPid -ne [uint32]$env:AUVRYNT_CAPTURE_PID) {
+        throw "Target window belongs to process $targetPid, expected $($env:AUVRYNT_CAPTURE_PID)."
+    }
+    $titleBuilder = New-Object System.Text.StringBuilder 512
+    [AuvryntNativeWindow]::GetWindowText($handle, $titleBuilder, $titleBuilder.Capacity) | Out-Null
+    $actualTitle = $titleBuilder.ToString()
+    if ($env:AUVRYNT_CAPTURE_TITLE -and $actualTitle.IndexOf($env:AUVRYNT_CAPTURE_TITLE, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        throw "Target window title does not match requested title: $actualTitle"
+    }
+} elseif ($env:AUVRYNT_CAPTURE_PID) {
     $handle = Find-WindowForProcess ([int]$env:AUVRYNT_CAPTURE_PID)
 }
 if ($handle -eq [IntPtr]::Zero -and $env:AUVRYNT_CAPTURE_TITLE) {
@@ -128,7 +180,7 @@ try {
     try { $printed = [AuvryntNativeWindow]::PrintWindow($handle, $hdc, 2) }
     finally { $graphics.ReleaseHdc($hdc) }
     if (-not $printed) {
-        $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $bmp.Size)
+        throw 'Could not render the target window without reading the desktop behind it.'
     }
     $bmp.Save($env:AUVRYNT_CAPTURE_OUTPUT, [System.Drawing.Imaging.ImageFormat]::Png)
 } finally {
@@ -143,8 +195,9 @@ try {
     await execFileAsync("powershell", ["-NoProfile", "-NonInteractive", "-Command", psScript], {
       env: {
         ...process.env,
-        AUVRYNT_CAPTURE_PID: pid ? String(pid) : "",
-        AUVRYNT_CAPTURE_TITLE: title ?? "",
+        AUVRYNT_CAPTURE_HANDLE: resolvedWindow.handle,
+        AUVRYNT_CAPTURE_PID: String(resolvedWindow.processId),
+        AUVRYNT_CAPTURE_TITLE: title ?? resolvedWindow.title,
         AUVRYNT_CAPTURE_OUTPUT: absoluteOutputPath,
       },
       maxBuffer: 1024 * 1024,

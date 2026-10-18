@@ -32,6 +32,19 @@ Inspect the workspace root for these indicators:
 - `export_presets.cfg`
 - `.godot/`
 
+### Krita / drawing indicators
+- Explicit request mentioning Krita, painting, drawing, canvas editing, or artwork review
+- A Krita document or a task that requires calibrated desktop interaction with Krita
+- **Primary skill:** `skills/krita-agent/SKILL.md`
+- **Supporting skill:** `skills/drawing-agent-core/SKILL.md`
+- Use `krita_web_agent_signal` before trying the no-plugin Krita action inventory
+- Do not install or depend on a Krita plugin, loopback bridge, or arbitrary Krita-side code
+
+### Roblox indicators
+- Explicit request mentioning Roblox, Roblox Studio, Luau, DataModel, Studio play-testing, or Roblox assets
+- An active Roblox Studio MCP task or Roblox-specific project/tooling context
+- Do not route to Roblox merely because unrelated Lua files exist
+
 ### Web indicators
 - `package.json`
 - `vite.config.*`, `next.config.*`, `nuxt.config.*`, `angular.json`, `astro.config.*`, `svelte.config.*`
@@ -66,10 +79,15 @@ If project is clearly a website or web application:
 - If `.blend` source assets exist → load `BLENDER_AGENT_GUIDE.md` only when editing that asset
 
 ### Rule 3 — General software / .NET
-If project is a desktop app, CLI, API, service, library, or non-Godot .NET project:
+If non-Godot .NET indicators exist (`*.sln`, `*.csproj`, `*.fsproj`, `*.vbproj`, `Directory.Build.props`, `Directory.Packages.props`, or `global.json`):
 - **Primary guide**: `SOFTWARE_AGENT_GUIDE.md`
 - Do not use Godot tools
 - Do not use browser tools unless the app exposes a web interface
+
+For non-.NET desktop apps, CLIs, APIs, services, or libraries:
+- Inspect the project's native manifest and configured scripts/commands.
+- Use ecosystem-native build/test/lint workflows.
+- Retain the generic safety/evidence rules, but do not apply .NET restore/build/test steps.
 
 ### Rule 4 — Blender-only
 If primary task involves 3D modeling, rendering, material, rigging, animation, UV mapping, or export:
@@ -83,18 +101,24 @@ If the primary task involves exact pixel editing, sprite animation, layers, pale
 - If the sprite belongs to a Godot project, use `GODOT_AGENT_GUIDE.md` only for the engine-side import/runtime task.
 - Do not use image-generation tools as a substitute for exact pixel edits.
 
-### Rule 6 — Monorepo
+### Rule 6 — Roblox Studio
+If the primary task is Roblox Studio/DataModel/Luau/play-test work:
+- **Primary guide**: `ROBLOX_AGENT_GUIDE.md`
+- Use only the currently reported Roblox Studio MCP tool surface.
+- Do not load Roblox guidance for generic Lua work without Roblox-specific evidence.
+
+### Rule 7 — Monorepo
 Identify the active subproject from the user request. Read only that subproject's guide. Refresh project state when switching subprojects.
 
 Example layout:
 ```
 apps/web/          → WEB_AGENT_GUIDE.md
 games/rpg/         → GODOT_AGENT_GUIDE.md (contains project.godot)
-services/api/      → SOFTWARE_AGENT_GUIDE.md
+services/api/      → SOFTWARE_AGENT_GUIDE.md only when it is a .NET service
 assets/characters/ → BLENDER_AGENT_GUIDE.md (.blend files)
 ```
 
-### Rule 7 — Unclear
+### Rule 8 — Unclear
 Inspect only the smallest useful set of root files. State which guide was selected and why. Do not scan the entire repository.
 
 ---

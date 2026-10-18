@@ -15,6 +15,9 @@ import { ensureGlobalAsepriteBridge } from "../integrations/aseprite/aseprite-li
 import { ensurePlaywrightRuntime } from "../playwright-runtime.js";
 import type { IntegrationKey } from "../background-lifecycle.js";
 import { findCommand } from "../tunnels/tunnel-utils.js";
+import { ensureOpenPencilMcpInstalled, openPencilInstallDirectory, verifyOpenPencilDocuments } from "../integrations/open-pencil/open-pencil-client.js";
+import { probeOpenPencilBridge } from "../integrations/open-pencil/open-pencil-health.js";
+import { ensureOpenPencilDesktopLauncher } from "../integrations/open-pencil/open-pencil-desktop-launcher.js";
 
 const MANAGED_SERENA_PACKAGE = "serena-agent==1.6.0";
 const MANAGED_UV_PACKAGE = "uv==0.11.32";
@@ -103,18 +106,44 @@ export async function selfHealStartIntegrations(
   launchRoot: string,
   executables: Record<string, string | undefined>,
   integrations: Record<IntegrationKey, boolean>,
+  options: { requireOpenPencilDocument?: boolean } = {},
 ): Promise<{ serenaExecutable?: string }> {
   let serenaExecutable: string | undefined;
   if (integrations.serena) {
     process.env.AUVRYNT_SERENA_ENABLED = "true";
     serenaExecutable = await ensureSerenaExecutable();
     process.env.AUVRYNT_SERENA_EXECUTABLE = serenaExecutable;
-    execFileSync(serenaExecutable, ["--version"], {
-      stdio: "ignore",
-      windowsHide: true,
-    });
+    if (!isSerenaExecutableUsable(serenaExecutable)) {
+      throw new Error(
+        `Serena executable is not runnable after installation: ${serenaExecutable}`,
+      );
+    }
   } else {
     process.env.AUVRYNT_SERENA_ENABLED = "false";
+  }
+
+  if (integrations.openPencil) {
+    const discovery = await discoverLocalIntegrations({ forceRefresh: true });
+    if (discovery.executables.openPencil || processDetected(discovery, "openPencil")) {
+      try {
+        await ensureOpenPencilMcpInstalled();
+        ensureOpenPencilDesktopLauncher(openPencilInstallDirectory());
+        const bridge = await probeOpenPencilBridge();
+        if (bridge.state === "connected") {
+          const documents = await verifyOpenPencilDocuments(launchRoot);
+          if (!documents.connected && options.requireOpenPencilDocument) throw new Error(documents.detail);
+          if (!documents.connected) console.warn(`[auvrynt] OpenPencil not connected: ${documents.detail}`);
+        } else {
+          if (options.requireOpenPencilDocument) {
+            throw new Error(`OpenPencil's own MCP server has not attached to its editor: ${bridge.detail} The official editor does not expose a remote restart endpoint; Auvrynt cannot safely reload an open unsaved design.`);
+          }
+          console.warn(`[auvrynt] OpenPencil not connected: ${bridge.detail}`);
+        }
+      } catch (error) {
+        if (options.requireOpenPencilDocument) throw error;
+        console.warn(`[auvrynt] OpenPencil MCP setup failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
   }
 
   if (integrations.playwright) ensurePlaywrightRuntime();
@@ -175,9 +204,42 @@ export async function selfHealStartIntegrations(
   return { serenaExecutable };
 }
 
+/**
+ * Probe a Serena command without allowing a broken launcher to make the
+ * dashboard mutation fail with an opaque child-process exception.
+ */
+export function isSerenaExecutableUsable(executable: string): boolean {
+  try {
+    execFileSync(executable, ["--version"], {
+      timeout: 15_000,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function serenaExecutableCandidates(): string[] {
+  const candidates = [findCommand("serena"), findInstalledExecutable("serena")];
+  return [...new Set(candidates.filter((candidate): candidate is string => Boolean(candidate)))];
+}
+
+function findWorkingSerenaExecutable(): string | undefined {
+  return serenaExecutableCandidates().find((candidate) => isSerenaExecutableUsable(candidate));
+}
+
 async function ensureSerenaExecutable(): Promise<string> {
-  const existing = findCommand("serena");
+  const existing = findWorkingSerenaExecutable();
   if (existing) return existing;
+
+  const broken = serenaExecutableCandidates()[0];
+  if (broken) {
+    console.warn(
+      `[auvrynt] Serena executable ${broken} failed its --version probe; reinstalling a managed copy.`,
+    );
+  }
 
   const configuredLocalSource = process.env.AUVRYNT_SERENA_LOCAL_SOURCE?.trim();
   const localSource = configuredLocalSource
@@ -200,10 +262,10 @@ async function ensureSerenaExecutable(): Promise<string> {
     : ["tool", "install", "--force", MANAGED_SERENA_PACKAGE];
   execFileSync(uv, installArgs, { stdio: "inherit", windowsHide: true });
 
-  const installed = findCommand("serena") ?? findInstalledExecutable("serena");
+  const installed = findWorkingSerenaExecutable();
   if (!installed) {
     throw new Error(
-      "Serena installed but its executable is not available. Restart PowerShell and run `where.exe serena`.",
+      "Serena was installed but no working executable was found. Restart PowerShell and run `where.exe serena`.",
     );
   }
   return installed;

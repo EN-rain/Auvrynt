@@ -17,6 +17,7 @@
     "scripts",
     "addons",
     "extensions",
+    "skills",
     "README.md"
   ],
   "publishConfig": {
@@ -42,7 +43,7 @@
     "@clack/prompts": "^1.5.1",
     "@earendil-works/pi-coding-agent": "^0.79.4",
     "@modelcontextprotocol/ext-apps": "^1.7.2",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "better-sqlite3": "^12.11.1",
     "drizzle-orm": "^0.45.2",
     "express": "^5.2.1",
@@ -65,7 +66,13 @@
   },
   "overrides": {
     "@hono/node-server": "2.0.11",
+    "brace-expansion": "5.0.9",
+    "fast-uri": "3.1.7",
+    "hono": "4.13.7",
+    "ip-address": "10.7.0",
     "protobufjs": "7.6.5",
+    "qs": "6.16.0",
+    "undici": "8.9.0",
     "ws": "8.21.0"
   },
   "allowScripts": {

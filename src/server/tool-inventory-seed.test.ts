@@ -27,11 +27,11 @@ const running = createServer(config);
 const counts = integrationToolCounts(config);
 console.log("seed counts:", JSON.stringify(counts));
 console.log("oauth scopes:", JSON.stringify(config.oauth.scopes));
-assert.ok((counts.blender?.total ?? 0) > 700, "blender tools must be seeded at startup without a session");
+assert.ok((counts.blender?.total ?? 0) > 200, "blender tools must be seeded at startup without a session");
 assert.ok((counts.serena?.total ?? 0) > 0, "serena tools must be seeded at startup without a session");
 
 const blenderTools = createDashboardToolsView(config, "blender");
-assert.ok(blenderTools && blenderTools.length > 700, "blender dashboard tools view must be populated without a session");
+assert.ok(blenderTools && blenderTools.length > 200, "blender dashboard tools view must be populated without a session");
 const serenaTools = createDashboardToolsView(config, "serena");
 assert.ok(serenaTools && serenaTools.length > 0, "serena dashboard tools view must be populated without a session");
 

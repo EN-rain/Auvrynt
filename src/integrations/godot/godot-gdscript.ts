@@ -417,7 +417,7 @@ export async function createEditorPlugin(
   input: { workspaceId: string; pluginName: string; description?: string; author?: string; version?: string },
 ): Promise<{ success: boolean; filesCreated: string[] }> {
   const workspace = registry.getWorkspace(input.workspaceId);
-  const addonDir = join(workspace.root, "addons", input.pluginName);
+  const addonDir = registry.resolvePath(workspace, join("addons", input.pluginName));
   await mkdir(addonDir, { recursive: true });
   const cfgPath = join(addonDir, "plugin.cfg");
   const gdPath = join(addonDir, "plugin.gd");

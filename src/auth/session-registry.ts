@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 import { logEvent, sessionIdPrefix } from "../logger.js";
 import {
   DEFAULT_SESSION_IDLE_TIMEOUT_MS,
+  DEFAULT_MCP_SESSIONS,
+  DEFAULT_MCP_SESSIONS_PER_CLIENT,
   MAX_MCP_SESSIONS,
   MAX_SESSION_IDLE_TIMEOUT_MS,
   MIN_SESSION_IDLE_TIMEOUT_MS,
@@ -69,8 +71,8 @@ export const DEFAULT_SESSION_RESERVATION_TIMEOUT_MS = 60 * 1000;
 export const DEFAULT_SESSION_CLOSE_TIMEOUT_MS = 5 * 1000;
 export const DEFAULT_SESSION_CLEANUP_INTERVAL_MS = 60 * 1000;
 export const HARD_MAX_SESSIONS = MAX_MCP_SESSIONS;
-export const DEFAULT_MAX_SESSIONS = HARD_MAX_SESSIONS;
-export const DEFAULT_MAX_SESSIONS_PER_OWNER = HARD_MAX_SESSIONS;
+export const DEFAULT_MAX_SESSIONS = DEFAULT_MCP_SESSIONS;
+export const DEFAULT_MAX_SESSIONS_PER_OWNER = DEFAULT_MCP_SESSIONS_PER_CLIENT;
 
 export class SessionRegistry {
   private readonly sessions = new Map<string, SessionRecord>();
@@ -333,6 +335,26 @@ export class SessionRegistry {
     record.roomId = roomId;
     record.workspaceId = workspaceId;
     record.lastActivityAt = this.now();
+  }
+
+  unbindWorkspace(sessionId: string, workspaceId?: string): boolean {
+    const record = this.sessions.get(sessionId);
+    if (!record) return false;
+    if (workspaceId !== undefined && record.workspaceId !== workspaceId) return false;
+    if (record.workspaceId === undefined && record.roomId === undefined) return false;
+    record.roomId = undefined;
+    record.workspaceId = undefined;
+    record.lastActivityAt = this.now();
+    return true;
+  }
+
+  unbindWorkspaceEverywhere(workspaceId: string): number {
+    let unbound = 0;
+    for (const record of this.sessions.values()) {
+      if (record.workspaceId !== workspaceId) continue;
+      if (this.unbindWorkspace(record.sessionId, workspaceId)) unbound++;
+    }
+    return unbound;
   }
 
   markClosing(sessionId: string, reason: SessionCloseReason): boolean {

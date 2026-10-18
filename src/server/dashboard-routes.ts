@@ -11,6 +11,9 @@ import {
   type DashboardRuntimeSnapshot,
 } from "./dashboard.js";
 import { integrationToolCounts } from "./mcp-tool-registrar.js";
+import type { JobsStore } from "../jobs/store.js";
+import { registerJobsDashboardRoutes } from "./jobs-dashboard-routes.js";
+import type { FacebookOAuthManager } from "../jobs/integrations/facebook/facebook-oauth.js";
 
 export interface DashboardRouteApp {
   get(path: string, handler: (req: Request, res: Response) => void | Promise<void>): void;
@@ -21,8 +24,11 @@ export function registerDashboardRoutes(options: {
   config: ServerConfig;
   snapshot: () => DashboardRuntimeSnapshot;
   nonce: () => string;
+  dashboardControlToken: string;
+  jobsStore?: JobsStore;
+  facebookOAuth?: FacebookOAuthManager;
 }): void {
-  const { app, config, snapshot, nonce } = options;
+  const { app, config, snapshot, nonce, dashboardControlToken, jobsStore, facebookOAuth } = options;
 
   app.get("/dashboard", async (req, res) => {
     if (!isLoopbackRequest(req)) {
@@ -36,7 +42,7 @@ export function registerDashboardRoutes(options: {
     res.setHeader("Referrer-Policy", "no-referrer");
     res.setHeader("Content-Security-Policy", dashboardCsp(pageNonce));
     const view = await createDashboardView(config, snapshot());
-    res.type("html").send(dashboardHtml(view, pageNonce));
+    res.type("html").send(dashboardHtml(view, pageNonce, dashboardControlToken));
   });
 
   app.get("/dashboard/data", async (req, res) => {
@@ -61,6 +67,16 @@ export function registerDashboardRoutes(options: {
       return;
     }
     res.json({ integration, tools, counts: integrationToolCounts(config) });
+  });
+
+  registerJobsDashboardRoutes({
+    app,
+    config,
+    jobsStore,
+    nonce,
+    dashboardControlToken,
+    pid: process.pid,
+    facebookOAuth,
   });
 }
 

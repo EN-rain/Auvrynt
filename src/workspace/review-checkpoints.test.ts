@@ -49,6 +49,16 @@ try {
 
   const afterReviewed = await manager.reviewChanges({ workspaceId: "ws_review", root });
   assert.equal(afterReviewed.summary.files, 0);
+
+  await execFileAsync("git", ["rev-parse", "--verify", "refs/auvrynt/review/ws_review/open"], { cwd: root });
+  await execFileAsync("git", ["rev-parse", "--verify", "refs/auvrynt/review/ws_review/baseline"], { cwd: root });
+  await manager.releaseWorkspace({ workspaceId: "ws_review" });
+  await assert.rejects(
+    () => execFileAsync("git", ["rev-parse", "--verify", "refs/auvrynt/review/ws_review/open"], { cwd: root }),
+  );
+  await assert.rejects(
+    () => execFileAsync("git", ["rev-parse", "--verify", "refs/auvrynt/review/ws_review/baseline"], { cwd: root }),
+  );
 } finally {
   await rm(root, { recursive: true, force: true });
 }

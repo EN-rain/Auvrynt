@@ -67,11 +67,13 @@ export async function runStatusCommand(dependencies: StatusCommandDependencies):
     ngrokUrl: config.ngrokUrl,
   });
   const rows: ConsoleRow[] = [];
+  let localConnected = false;
 
   try {
     const response = await fetch(healthUrl, { signal: AbortSignal.timeout(1500) });
     const body = await response.json().catch(() => ({})) as { ok?: boolean; name?: string };
-    rows.push({ label: "Local MCP", value: response.ok && body.ok ? "Connected" : "Error" });
+    localConnected = response.ok && body.ok === true && body.name === "auvrynt";
+    rows.push({ label: "Local MCP", value: localConnected ? "Connected" : "Error" });
   } catch (error) {
     rows.push({ label: "Local MCP", value: "Disconnected" });
     rows.push({ label: "Detail", value: error instanceof Error ? error.message : String(error) });
@@ -82,7 +84,9 @@ export async function runStatusCommand(dependencies: StatusCommandDependencies):
     rows.push({ label: "Process", value: `PID ${active.record.pid}` });
     rows.push({ label: "Workspace", value: active.record.launchRoot ?? "unknown" });
   } else {
-    rows.push({ label: "Process", value: "Not running" });
+    rows.push({ label: "Process", value: localConnected
+      ? "Responding (managed process identity unavailable)"
+      : "Not running" });
   }
   rows.push({
     label: "Public MCP",
@@ -139,7 +143,9 @@ export async function runStatusCommand(dependencies: StatusCommandDependencies):
   printConsolePanel(
     "Auvrynt status",
     rows,
-    active ? RUNNING_COMMAND_HINTS : "Start: auvrynt start",
+    active ? RUNNING_COMMAND_HINTS : localConnected
+      ? "Server is reachable, but Auvrynt cannot confirm it owns the process. Avoid starting a duplicate."
+      : "Start: auvrynt start",
   );
 }
 

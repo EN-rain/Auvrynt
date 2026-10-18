@@ -27,6 +27,8 @@ const PROCESS_MARKERS: Record<string, string[]> = {
   cloudflare_tunnel: ["cloudflared.exe", "cloudflared"],
   serena: ["serena.exe", "serena"],
   roblox: ["robloxstudiobeta.exe", "robloxstudio.exe", "robloxplayerbeta.exe"],
+  krita: ["krita.exe", "krita"],
+  openPencil: ["openpencil.exe", "open-pencil.exe", "open_pencil.exe"],
 };
 
 export const DEFAULT_INTEGRATION_DISCOVERY_CACHE_MS = 10_000;
@@ -109,8 +111,45 @@ function findAsepriteInSource(sourcePath: string | undefined): string | undefine
   return candidates.find((candidate) => existsSync(candidate));
 }
 
+/** Only treat a desktop .exe as the editor; the similarly named npm CLI is not the app. */
+export function findOpenPencilExecutable(
+  configured?: string,
+  searchDirs: string[] = [
+    join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "Programs"),
+    process.env.PROGRAMFILES ?? "C:\\Program Files",
+    process.env["PROGRAMFILES(X86)"] ?? "C:\\Program Files (x86)",
+    process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"),
+  ],
+): string | undefined {
+  if (configured && /\.exe$/i.test(configured) && existsSync(configured)) return configured;
+  const folders = ["OpenPencil", "open-pencil", "openpencil", ""];
+  const names = ["OpenPencil.exe", "open-pencil.exe", "openpencil.exe"];
+  for (const dir of searchDirs) {
+    for (const folder of folders) {
+      for (const name of names) {
+        const candidate = join(dir, folder, name);
+        if (existsSync(candidate)) return candidate;
+      }
+    }
+  }
+  return undefined;
+}
+
+async function findOpenPencilOnPath(): Promise<string | undefined> {
+  if (process.platform !== "win32") return undefined;
+  for (const name of ["OpenPencil.exe", "open-pencil.exe", "openpencil.exe"]) {
+    try {
+      const { stdout } = await execFileAsync("where.exe", [name], { timeout: 3_000, windowsHide: true });
+      const found = stdout.split(/\r?\n/).map((line) => line.trim())
+        .find((path) => /\.exe$/i.test(path) && existsSync(path));
+      if (found) return found;
+    } catch { /* Not on PATH. */ }
+  }
+  return undefined;
+}
+
 function hasProcess(processes: string[], markers: string[]): boolean {
-  return processes.some((processName) => markers.some((marker) => processName === marker || processName.includes(marker)));
+  return processes.some((processName) => markers.some((marker) => processName.toLowerCase() === marker || processName.toLowerCase().includes(marker)));
 }
 
 export async function discoverLocalIntegrations(
@@ -158,13 +197,14 @@ async function performDiscovery(pollMs: number): Promise<LocalIntegrationDiscove
   };
 
   const configuredAseprite = configExecs.aseprite || findAsepriteInSource(configExecs.asepriteSource);
-  const [processes, cloudflaredSys, serenaSys, godotSys, blenderSys, asepriteSys, blenderLabMcp, auvryntBlenderBridge, auvryntGodotBridge] = await Promise.all([
+  const [processes, cloudflaredSys, serenaSys, godotSys, blenderSys, asepriteSys, openPencilSys, blenderLabMcp, auvryntBlenderBridge, auvryntGodotBridge] = await Promise.all([
     runningProcessNames(),
     configExecs.cloudflared ? undefined : findExecutable("cloudflared"),
     configExecs.serena ? undefined : findExecutable("serena"),
     configExecs.godot || configExecs.godotCsharp ? undefined : findExecutable("godot"),
     configExecs.blender ? undefined : findExecutable("blender"),
     configuredAseprite ? undefined : findExecutable("aseprite"),
+    findOpenPencilExecutable(configExecs.openPencil) ?? await findOpenPencilOnPath(),
     pollPort(blenderMcpPort),
     pollPort(49323),
     pollPort(49322),
@@ -187,6 +227,7 @@ async function performDiscovery(pollMs: number): Promise<LocalIntegrationDiscove
       blender,
       aseprite,
       asepriteSource: configExecs.asepriteSource,
+      openPencil: openPencilSys,
     },
     ports: {
       blender_lab_mcp: blenderLabMcp,

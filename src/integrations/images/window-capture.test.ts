@@ -4,11 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../../infrastructure/config.js";
 import { ProcessManager } from "../../process/processes.js";
-import { captureWindow } from "./window-capture.js";
+import { captureWindow, WINDOW_CAPTURE_FALLBACK_POLICY } from "./window-capture.js";
 import { WorkspaceRegistry } from "../../workspace/workspaces.js";
 
 const root = await mkdtemp(join(tmpdir(), "auvrynt-window-capture-test-"));
 try {
+  assert.equal(WINDOW_CAPTURE_FALLBACK_POLICY, "disabled", "window capture must never sample pixels from the desktop behind the target");
   const registry = new WorkspaceRegistry(loadConfig({
     AUVRYNT_ALLOWED_ROOTS: root,
     AUVRYNT_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",

@@ -30,10 +30,14 @@ import { registerGodotCsharpTools } from "./tools/godot-csharp-tools-registratio
 import { registerGodotGdscriptTools } from "./tools/godot-gdscript-tools-registration.js";
 import { registerBlenderTools } from "./tools/blender-tools-registration.js";
 import { registerAsepriteTools } from "./tools/aseprite-tools-registration.js";
-import { registerContext7Tools } from "../integrations/context7/context7-tools.js";
-import { registerObsidianTools } from "../integrations/obsidian/obsidian-tools.js";
 import { registerAgentReachTools } from "../integrations/agent-reach/agent-reach-tools.js";
 import { registerRobloxTools } from "./tools/roblox-tools-registration.js";
+import { registerOpenPencilTools } from "./tools/open-pencil-tools-registration.js";
+import { registerDesktopTools } from "./tools/desktop-tools-registration.js";
+import { registerKritaTools } from "./tools/krita-tools-registration.js";
+import { registerCodexTools } from "./tools/codex-tools-registration.js";
+import { registerRecoveryTools } from "./tools/recovery-tools-registration.js";
+import { registerArbiterTools } from "./tools/arbiter-tools-registration.js";
 import type { WorkspaceChangeTracker } from "./workspace-analytics.js";
 
 interface ToolNames {
@@ -45,6 +49,24 @@ interface ToolNames {
   glob: "find_files" | "glob";
   ls: "list_directory" | "ls";
   shell: "run_shell" | "bash";
+}
+
+type IndependentlyRegisteredIntegration = "serena" | "agentReach";
+
+export function integrationRegistrationEnabled(
+  config: ServerConfig,
+  integration: IndependentlyRegisteredIntegration,
+): boolean {
+  switch (integration) {
+    case "serena":
+      return (
+        config.integrations.serena &&
+        config.serena.enabled &&
+        config.oauth.scopes.includes("auvrynt:serena")
+      );
+    case "agentReach":
+      return true;
+  }
 }
 
 export function createMcpServer(
@@ -114,11 +136,14 @@ export function createMcpServer(
     workspaces,
     reviewCheckpoints,
     processManager,
+    serenaManager,
     roomRegistry,
     sessionRegistry,
     workspaceChanges,
     logToolCall,
   );
+  registerRecoveryTools(server, config);
+  registerArbiterTools(server, config);
   registerCoreFileTools(
     server,
     config,
@@ -143,12 +168,17 @@ export function createMcpServer(
   registerBlenderTools(server, config, workspaces);
   registerAsepriteTools(server, config, workspaces, processManager);
   registerRobloxTools(server, config);
+  registerOpenPencilTools(server, config, workspaces);
+  registerDesktopTools(server, config);
+  registerKritaTools(server, config);
+  registerCodexTools(server, config, workspaces);
 
-  if (config.oauth.scopes.includes("auvrynt:serena")) {
+  if (integrationRegistrationEnabled(config, "serena")) {
     registerSerenaTools(server, config, serenaManager, workspaces);
-  registerContext7Tools(server);
-  registerObsidianTools(server, config);
-  registerAgentReachTools(server);
+  }
+
+  if (integrationRegistrationEnabled(config, "agentReach")) {
+    registerAgentReachTools(server);
   }
 
   updateToolScopes();
@@ -202,6 +232,7 @@ Godot tools: Use detect_godot_project when a workspace contains project.godot. U
 Roblox Studio tools: Use roblox_status then roblox_list_tools / roblox_call (or roblox_* aliases) to proxy the official Studio MCP (Enable Studio as MCP server). Requires auvrynt start roblox and an open Studio session.
 Aseprite tools: Use aseprite_detect to verify the configured source build, aseprite_inspect_file for layers/frames/tags, aseprite_set_pixels or aseprite_draw_shapes for exact pixel edits, and the export/convert tools for workspace-bound outputs. Aseprite files and output paths must stay inside the open workspace.
 Window capture: Use capture_window to screenshot a running application tracked by Auvrynt. Use godot_capture_game specifically for Godot game processes.
+Krita drawing: Call krita_web_agent_signal with the workspaceId before trying the Krita action inventory. It describes the no-plugin calibrated-desktop path, the safe-smoke order (including window-only automatic canvas calibration that changes only local metadata), and the explicit-confirmation boundary for shortcuts, canvas input, and saves. Never install, import, register, probe, or depend on a Krita plugin or loopback bridge.
 Security: All paths must be workspace-relative. Never access files outside the opened workspace. Do not claim a screenshot or comparison succeeded unless the tool returned successfully.`;
 
   return `Use Auvrynt as a local coding workspace. Call ${toolNames.openWorkspace} once per project folder or worktree to obtain a workspaceId. Reuse that same workspaceId for all later file, search, edit, write, show-changes, view-image, and shell tools in that folder; do not call ${toolNames.openWorkspace} again unless switching folders/worktrees, changing checkout/worktree mode, the workspaceId is rejected as unknown, or the user explicitly asks to reopen. ${agentsMd}${skills}${inspection}${viewImageInstruction}Prefer ${toolNames.edit} for targeted source-file modifications and ${toolNames.write} only for new files or complete rewrites. Use ${toolNames.shell} for tests, builds, git inspection, package scripts, and commands that genuinely require a shell. The shell/process tools execute with the local user's privileges and are not a filesystem sandbox; only invoke them when the granted auvrynt:process scope and requested task justify local command execution.${showChanges}${devTools}`;

@@ -121,6 +121,23 @@ try {
   assert.equal(restoredWorktree.worktree?.managed, true);
   secondStore.close();
 
+  await rm(persistentWorktree.workspace.root, { recursive: true, force: true });
+  const thirdStore = new SqliteWorkspaceStore(stateDir);
+  const missingWorktreeRegistry = new WorkspaceRegistry(config, thirdStore);
+  const recoveredCheckout = missingWorktreeRegistry.getWorkspace(persistentWorktree.workspace.id);
+  assert.equal(recoveredCheckout.mode, "checkout");
+  assert.equal(recoveredCheckout.root, gitRoot);
+  assert.equal(recoveredCheckout.sourceRoot, undefined);
+  assert.equal(recoveredCheckout.worktree, undefined);
+  thirdStore.close();
+
+  const fourthStore = new SqliteWorkspaceStore(stateDir);
+  const persistedFallbackRegistry = new WorkspaceRegistry(config, fourthStore);
+  const persistedFallback = persistedFallbackRegistry.getWorkspace(persistentWorktree.workspace.id);
+  assert.equal(persistedFallback.mode, "checkout");
+  assert.equal(persistedFallback.root, gitRoot);
+  fourthStore.close();
+
   const limitedRegistry = new WorkspaceRegistry(config, undefined, { maxActiveWorkspaces: 3 });
   const concurrentOpens = await Promise.allSettled(
     Array.from({ length: 8 }, () => limitedRegistry.openWorkspace(root)),

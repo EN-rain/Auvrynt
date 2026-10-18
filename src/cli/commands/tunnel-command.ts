@@ -1,6 +1,11 @@
 import * as prompts from "@clack/prompts";
 import { resolve } from "node:path";
 import type { InstanceLockRecord, StartRequest, TunnelProvider } from "../../background-lifecycle.js";
+import {
+  fetchCloudflareTunnelToken,
+  normalizeCloudflareAccountId,
+  normalizeCloudflareTunnelId,
+} from "../../tunnels/cloudflare-api-token.js";
 import { normalizeNgrokUrl, tunnelProviderLabel } from "../../tunnels/tunnel-utils.js";
 import { loadAuvryntFiles, writeAuvryntAuth, writeAuvryntConfig, type AuvryntUserConfig } from "../../user-config.js";
 
@@ -27,6 +32,7 @@ export async function runTunnelCommand(dependencies: TunnelCommandDependencies):
       { value: "1", label: "1. Cloudflare (CDN tunnel)", hint: current === "cloudflare" ? "current" : undefined },
       { value: "2", label: "2. ngrok", hint: current === "ngrok" ? "current" : undefined },
       { value: "3", label: "3. Custom external URL", hint: current === "custom" ? "current" : "for Cloudflare Named Tunnel or another external proxy" },
+      { value: "4", label: "4. Cloudflare tunnel ID + API token", hint: "managed Named Tunnel; also requires account ID and HTTPS hostname" },
     ],
   });
 
@@ -35,13 +41,14 @@ export async function runTunnelCommand(dependencies: TunnelCommandDependencies):
     return;
   }
 
-  const provider: TunnelProvider = picked === "2" ? "ngrok" : picked === "3" ? "custom" : "cloudflare";
+  const provider: TunnelProvider = picked === "2" ? "ngrok" : picked === "3" || picked === "4" ? "custom" : "cloudflare";
+  const cloudflareTokenManaged = picked === "4";
   let publicBaseUrl = files.config.publicBaseUrl;
   let ngrokAuthtoken = files.config.ngrokAuthtoken;
   let ngrokUrl = files.config.ngrokUrl;
   let cloudflareTunnelToken = files.auth.cloudflareTunnelToken;
 
-  if (provider === "custom") {
+  if (picked === "3") {
     const answer = await prompts.text({
       message: "Cloudflare Named Tunnel token (leave blank to manage the tunnel externally)",
       placeholder: "paste the tunnel token from Cloudflare, or press Enter to skip",
@@ -53,6 +60,43 @@ export async function runTunnelCommand(dependencies: TunnelCommandDependencies):
     }
     const trimmed = String(answer).trim();
     if (trimmed) cloudflareTunnelToken = trimmed;
+  }
+
+  if (cloudflareTokenManaged) {
+    const accountAnswer = await prompts.text({
+      message: "Cloudflare account ID (32 hexadecimal characters)",
+      validate: (value) => {
+        try { normalizeCloudflareAccountId(String(value)); return undefined; }
+        catch (error) { return error instanceof Error ? error.message : String(error); }
+      },
+    });
+    if (prompts.isCancel(accountAnswer)) {
+      prompts.cancel("Tunnel setup cancelled.");
+      return;
+    }
+    const tunnelAnswer = await prompts.text({
+      message: "Cloudflare Named Tunnel ID (UUID)",
+      validate: (value) => {
+        try { normalizeCloudflareTunnelId(String(value)); return undefined; }
+        catch (error) { return error instanceof Error ? error.message : String(error); }
+      },
+    });
+    if (prompts.isCancel(tunnelAnswer)) {
+      prompts.cancel("Tunnel setup cancelled.");
+      return;
+    }
+    const apiTokenAnswer = await prompts.password({
+      message: "Cloudflare API token (hidden input; never saved)",
+      validate: (value) => String(value).trim().length >= 16 ? undefined : "Enter your Cloudflare API token.",
+    });
+    if (prompts.isCancel(apiTokenAnswer)) {
+      prompts.cancel("Tunnel setup cancelled.");
+      return;
+    }
+    cloudflareTunnelToken = await fetchCloudflareTunnelToken(
+      String(accountAnswer), String(tunnelAnswer), String(apiTokenAnswer),
+    );
+    prompts.log.success("Connector token retrieved. Your Cloudflare API token was not saved.");
   }
 
   if (provider === "ngrok" && !ngrokAuthtoken && !process.env.AUVRYNT_NGROK_AUTHTOKEN) {
@@ -112,7 +156,9 @@ export async function runTunnelCommand(dependencies: TunnelCommandDependencies):
     publicBaseUrl = new URL(String(answer).trim()).origin;
   }
 
-  const nextConfig: AuvryntUserConfig = { ...files.config, tunnelProvider: provider, publicBaseUrl };
+  const nextConfig: AuvryntUserConfig = {
+    ...files.config, tunnelProvider: provider, publicBaseUrl, cloudflareTokenManaged,
+  };
   if (ngrokAuthtoken) nextConfig.ngrokAuthtoken = ngrokAuthtoken;
   else delete nextConfig.ngrokAuthtoken;
   if (ngrokUrl) nextConfig.ngrokUrl = ngrokUrl;

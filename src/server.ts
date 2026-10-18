@@ -36,12 +36,13 @@ import {
 import { RoomRegistry } from "./room-registry.js";
 import { createShutdownCoordinator } from "./shutdown.js";
 import { hardenHttpServer } from "./http-server-hardening.js";
-import { createFixedWindowRateLimiter } from "./http-rate-limit.js";
 import { BoundedMcpEventStore } from "./mcp-event-store.js";
 import { runWithContext } from "./request-context.js";
 import { getQueueDiagnostics } from "./integration-queue.js";
+import { McpRequestTimingWindow, attachMcpRequestTiming } from "./infrastructure/request-timing.js";
 import {
   hasRequiredScopes,
+  normalizeMcpToolCallBody,
   requiredScopesForToolCall,
   requiredScopesForToolName,
   toolIntegrationEnabled,
@@ -56,8 +57,12 @@ import { SerenaManager } from "./serena-manager.js";
 import { createMcpServer } from "./server/mcp-server-factory.js";
 import { applyIntegrationProfileUpdate } from "./server/integration-profile-update.js";
 import { syncMcpToolAvailability } from "./server/mcp-tool-registrar.js";
+import { markRecoverySessionDisconnected } from "./server/recovery-session-close.js";
+import { normalizeSessionLimits } from "./server/session-limit-runtime.js";
+import { initializeToolInventory } from "./server/tool-inventory-initializer.js";
 import { openAiLogicalSessionId } from "./server/openai-session-hint.js";
 import { createWorkspaceChangeTracker } from "./server/workspace-analytics.js";
+import { cleanupWorkspaceResources } from "./server/workspace-resource-cleanup.js";
 import {
   isMainModule,
   mcpClientName,
@@ -65,16 +70,14 @@ import {
   sendJsonRpcError,
 } from "./server/http-helpers.js";
 import {
-  brandAssetDirectory,
-  setAssetHeaders,
-  uiBuildDirectory,
   workspaceAppAssetInfo,
   workspaceAppHtml,
 } from "./server/ui-assets.js";
+import { registerOAuthRateLimits, registerStaticAssets } from "./server/http-server-bootstrap.js";
 import { registerDashboardRoutes } from "./server/dashboard-routes.js";
-
+import { JobsStore } from "./jobs/store.js"; import { FacebookOAuthManager } from "./jobs/integrations/facebook/facebook-oauth.js";
+import { shutdownCodexOrchestrator } from "./integrations/codex/codex-orchestrator.js";
 type Transport = StreamableHTTPServerTransport;
-
 let eventLoopDelay = 0;
 let expectedEventLoopProbeAt = Date.now() + 1_000;
 const eventLoopProbe = setInterval(() => {
@@ -86,16 +89,18 @@ eventLoopProbe.unref();
 export interface RunningServer {
   app: ReturnType<typeof createMcpExpressApp>;
   config: ServerConfig;
+  dashboardControlToken: string; jobsStore?: JobsStore; facebookOAuth?: FacebookOAuthManager;
   updateIntegrations(integrations: ServerConfig["integrations"], options?: { serenaExecutable?: string }): Promise<{ updated: boolean; activeRequests: number; activeToolCalls: number; closedSessions: number }>;
   refreshToolAvailability(): void;
-  updateSessionLimit(maxSessions: number): void;
+  updateSessionLimit(maxSessions: number, maxSessionsPerClient?: number): void;
   updateSessionIdleTimeout(timeoutMs: number): void;
-  updateWorkspaceRoots(roots: string[]): { updated: boolean; activeToolCalls: number; closedWorkspaces: number };
+  updateWorkspaceRoots(roots: string[]): Promise<{ updated: boolean; activeToolCalls: number; closedWorkspaces: number; resourceCleanupFailures: number }>; 
   close(): Promise<void>;
 }
 export function createServer(config = loadConfig()): RunningServer {
   const allowedHosts = config.allowedHosts.includes("*") ? ["*"] : Array.from(new Set([config.host, ...config.allowedHosts]));
   const app = createMcpExpressApp({ host: config.host, allowedHosts });
+  const dashboardControlToken = randomBytes(32).toString("base64url");
   const sessionRegistry = new SessionRegistry(config, { maxSessions: config.maxSessions, maxSessionsPerOwner: config.maxSessionsPerClient, sessionIdleTimeoutMs: config.sessionIdleTimeoutMs });
   const mcpUrl = new URL("/mcp", config.publicBaseUrl);
   const resourceServerUrl = resourceUrlFromServerUrl(mcpUrl);
@@ -115,6 +120,8 @@ export function createServer(config = loadConfig()): RunningServer {
       getOAuthProtectedResourceMetadataUrl(resourceServerUrl),
   });
   const workspaceStore = createWorkspaceStore(config.stateDir);
+  const jobsStore = config.jobs.enabled ? new JobsStore(config.stateDir) : undefined;
+  const facebookOAuth = config.jobs.enabled ? new FacebookOAuthManager() : undefined;
   const workspaceDb = workspaceStore.getDatabase?.();
   const roomRegistry = new RoomRegistry(workspaceDb);
   if (workspaceDb) createArtifactRegistry(workspaceDb.db);
@@ -131,13 +138,7 @@ export function createServer(config = loadConfig()): RunningServer {
     idleTimeoutMinutes: config.serena.idleTimeoutMinutes,
     maxInstances: config.serena.maxInstances,
   });
-  // Populate the tool inventory at startup so the dashboard tool settings view
-  // shows every registered tool before any MCP client connects. Without this,
-  // the inventory stays empty until a session initializes (registerAppTool is
-  // otherwise only invoked from createMcpServer, which runs per session).
-  // The throwaway server is never connected; only its registrations matter.
-  // Sessions created later register the same names idempotently.
-  void createMcpServer(
+  initializeToolInventory(
     config,
     workspaces,
     reviewCheckpoints,
@@ -150,10 +151,11 @@ export function createServer(config = loadConfig()): RunningServer {
   let activeMcpRequests = 0;
   let activeToolCalls = 0;
   let lastMcpActivityAt: number | undefined;
+  const mcpRequestTimings = new McpRequestTimingWindow();
   let acceptingRequests = true;
-  app.set("trust proxy", true);
+  app.set("trust proxy", false);
   app.disable("x-powered-by");
-  app.use(express.json({ limit: "4mb" }));
+  app.use("/mcp", express.json({ limit: "16mb" })); app.use(express.json({ limit: "4mb" }));
   app.use((req, res, next) => {
     const requestId = randomUUID();
     const startedAt = performance.now();
@@ -182,6 +184,42 @@ export function createServer(config = loadConfig()): RunningServer {
     next();
   });
   registerOAuthRateLimits(app);
+  // Support RFC 6749 Section 2.3.1 HTTP Basic authentication for OAuth token requests
+  app.use("/token", express.urlencoded({ extended: false }));
+  app.use("/token", (req, _res, next) => {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.toLowerCase().startsWith("basic ")) {
+      try {
+        const credentials = Buffer.from(authHeader.slice(6).trim(), "base64").toString("utf8");
+        const colonIndex = credentials.indexOf(":");
+        if (colonIndex !== -1) {
+          const rawId = credentials.slice(0, colonIndex);
+          const rawSecret = credentials.slice(colonIndex + 1);
+          let clientId: string;
+          let clientSecret: string;
+          try {
+            clientId = decodeURIComponent(rawId);
+            clientSecret = decodeURIComponent(rawSecret);
+          } catch {
+            clientId = rawId;
+            clientSecret = rawSecret;
+          }
+          if (!req.body || typeof req.body !== "object") {
+            req.body = {};
+          }
+          if (!req.body.client_id) {
+            req.body.client_id = clientId;
+          }
+          if (!req.body.client_secret && clientSecret) {
+            req.body.client_secret = clientSecret;
+          }
+        }
+      } catch {
+        // Let downstream token handler handle invalid auth
+      }
+    }
+    next();
+  });
   app.use("/.well-known/openid-configuration", (req, _res, next) => { req.url = "/.well-known/oauth-authorization-server"; next(); });
   app.use(
     mcpAuthRouter({
@@ -196,18 +234,18 @@ export function createServer(config = loadConfig()): RunningServer {
     }),
   );
   registerStaticAssets(app);
-
   const dashboardSnapshot = () => ({
     ready: acceptingRequests, sessions: sessionRegistry.connectedCount(), activeToolCalls,
     lastMcpActivityAt, runningProcesses: processManager.runningCount(),
     workspaceChanges: workspaceChanges.snapshot(),
+    mcpRequestTimings: mcpRequestTimings.snapshot(),
   });
 
   registerDashboardRoutes({
     app,
     config,
     snapshot: dashboardSnapshot,
-    nonce: () => randomBytes(18).toString("base64url"),
+    nonce: () => randomBytes(18).toString("base64url"), dashboardControlToken, jobsStore, facebookOAuth,
   });
 
   app.get("/tool-card-preview", (req, res) => {
@@ -277,12 +315,38 @@ export function createServer(config = loadConfig()): RunningServer {
     });
   });
 
+  app.options("/mcp", (_req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      "Content-Type, Authorization, mcp-session-id, x-mcp-client-name, x-client-name",
+    );
+    res.setHeader("Access-Control-Expose-Headers", "mcp-session-id");
+    res.setHeader("Access-Control-Max-Age", "86400");
+    res.sendStatus(204);
+  });
+
   app.all("/mcp", async (req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Expose-Headers", "mcp-session-id");
+    if (req.method === "OPTIONS") {
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+      res.setHeader(
+        "Access-Control-Allow-Headers",
+        "Content-Type, Authorization, mcp-session-id, x-mcp-client-name, x-client-name",
+      );
+      res.setHeader("Access-Control-Max-Age", "86400");
+      res.sendStatus(204);
+      return;
+    }
     attachSseHeartbeat(res);
+    const requestTiming = attachMcpRequestTiming(res, mcpRequestTimings, req.body, req.method);
     const requestId = res.locals.requestId as string | undefined;
     const sessionId = req.header("mcp-session-id");
     const initializeRequest =
-      req.method === "POST" && isInitializeRequest(req.body);
+      req.method === "POST" &&
+      (isInitializeRequest(req.body) || (Array.isArray(req.body) && req.body.some(isInitializeRequest)));
     activeMcpRequests++;
     let requestReleased = false;
     const releaseRequest = () => {
@@ -293,12 +357,16 @@ export function createServer(config = loadConfig()): RunningServer {
     res.once("finish", releaseRequest);
     res.once("close", releaseRequest);
 
-    await new Promise<void>((resolve, reject) => {
-      bearerAuth(req, res, (error?: unknown) => {
-        if (error) reject(error);
-        else resolve();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        bearerAuth(req, res, (error?: unknown) => {
+          if (error) reject(error);
+          else resolve();
+        });
       });
-    });
+    } finally {
+      requestTiming.markAuthFinished();
+    }
     if (res.headersSent) return;
 
     if (
@@ -321,7 +389,8 @@ export function createServer(config = loadConfig()): RunningServer {
 
     lastMcpActivityAt = Date.now();
     const authScopes = req.auth.scopes ?? [];
-    const toolCalls = Array.isArray(req.body) ? req.body : [req.body];
+    const normalizedBody = normalizeMcpToolCallBody(req.body);
+    const toolCalls = Array.isArray(normalizedBody) ? normalizedBody : [normalizedBody];
     for (const message of toolCalls) {
       if (!message || typeof message !== "object") continue;
       const rpc = message as {
@@ -518,6 +587,7 @@ export function createServer(config = loadConfig()): RunningServer {
         transport.onclose = () => {
           const closedSessionId = transport?.sessionId;
           if (closedSessionId) {
+            markRecoverySessionDisconnected(config, sessionRegistry, closedSessionId);
             sessionRegistry.handleTransportClosed(closedSessionId, "transport_closed");
           }
         };
@@ -561,17 +631,19 @@ export function createServer(config = loadConfig()): RunningServer {
         return;
       }
 
+      requestTiming.markDispatchStarted();
       if (sessionId) {
         await runWithContext(
           {
             sessionId,
             ownerClientId: req.auth!.clientId,
+            logicalSessionId: logicalSessionId ?? sessionRegistry.get(sessionId)?.logicalSessionId,
             authScopes,
           },
-          () => transport!.handleRequest(req, res, req.body),
+          () => transport!.handleRequest(req, res, normalizedBody),
         );
       } else {
-        await transport!.handleRequest(req, res, req.body);
+        await transport!.handleRequest(req, res, normalizedBody);
         if (initializationCommitted && res.statusCode >= 400 && requestSessionId) {
           await sessionRegistry.closeSession(requestSessionId, "initialization_failed");
         }
@@ -585,6 +657,7 @@ export function createServer(config = loadConfig()): RunningServer {
         sendJsonRpcError(res, 500, -32603, "Internal server error");
       }
     } finally {
+      requestTiming.finish();
       if (requestBegan && requestSessionId) {
         sessionRegistry.endRequest(requestSessionId, containsToolCall);
       }
@@ -632,15 +705,50 @@ export function createServer(config = loadConfig()): RunningServer {
   return {
     app,
     config,
-    updateSessionLimit(maxSessions) {
-      sessionRegistry.updateLimits(maxSessions);
-      config.maxSessions = maxSessions;
-      config.maxSessionsPerClient = maxSessions;
+    dashboardControlToken, jobsStore, facebookOAuth,
+    updateSessionLimit(maxSessions, maxSessionsPerClient = config.maxSessionsPerClient) {
+      const limits = normalizeSessionLimits(maxSessions, maxSessionsPerClient, config.maxSessions, config.maxSessionsPerClient);
+      sessionRegistry.updateLimits(limits.maxSessions, limits.maxSessionsPerClient);
+      config.maxSessions = limits.maxSessions;
+      config.maxSessionsPerClient = limits.maxSessionsPerClient;
     },
     updateSessionIdleTimeout(timeoutMs) { sessionRegistry.updateSessionIdleTimeout(timeoutMs); config.sessionIdleTimeoutMs = timeoutMs; },
-    updateWorkspaceRoots(roots) {
-      if (activeToolCalls > 0) return { updated: false, activeToolCalls, closedWorkspaces: 0 };
-      return { updated: true, activeToolCalls: 0, closedWorkspaces: workspaces.replaceAllowedRoots(roots).length };
+    async updateWorkspaceRoots(roots) {
+      if (activeToolCalls > 0) {
+        return { updated: false, activeToolCalls, closedWorkspaces: 0, resourceCleanupFailures: 0 };
+      }
+      const closedWorkspaceIds = workspaces.replaceAllowedRoots(roots);
+      let resourceCleanupFailures = 0;
+      for (const workspaceId of closedWorkspaceIds) {
+        try {
+          await cleanupWorkspaceResources(workspaceId, processManager, serenaManager);
+        } catch (error) {
+          resourceCleanupFailures++;
+          logEvent(config.logging, "error", "workspace_resource_cleanup_failed", {
+            workspaceId,
+            reason: "allowed_roots_updated",
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        try {
+          await reviewCheckpoints.releaseWorkspace({ workspaceId });
+        } catch (error) {
+          logEvent(config.logging, "warn", "review_checkpoint_release_failed", {
+            workspaceId,
+            reason: "allowed_roots_updated",
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        roomRegistry.closeWorkspace(workspaceId);
+        sessionRegistry.unbindWorkspaceEverywhere(workspaceId);
+        workspaceChanges.deactivateWorkspace(workspaceId);
+      }
+      return {
+        updated: true,
+        activeToolCalls: 0,
+        closedWorkspaces: closedWorkspaceIds.length,
+        resourceCleanupFailures,
+      };
     },
     async updateIntegrations(integrations, options) {
       if (activeToolCalls > 0) {
@@ -676,60 +784,13 @@ export function createServer(config = loadConfig()): RunningServer {
       if (closed) return;
       closed = true;
       acceptingRequests = false;
-      await shutdownCoordinator.shutdown();
+      await shutdownCoordinator.shutdown().finally(async () => {
+        jobsStore?.close();
+        await shutdownCodexOrchestrator(config.stateDir);
+      });
     },
   };
 }
-function registerOAuthRateLimits(
-  app: ReturnType<typeof createMcpExpressApp>,
-): void {
-  app.post("/authorize", createFixedWindowRateLimiter({
-    windowMs: 5 * 60_000,
-    maxRequests: 12,
-    message: "Too many authorization attempts. Try again later.",
-  }));
-  app.post("/register", createFixedWindowRateLimiter({
-    windowMs: 60 * 60_000,
-    maxRequests: 600,
-    message: "Too many OAuth client registrations. Try again later.",
-  }));
-  app.post("/token", createFixedWindowRateLimiter({
-    windowMs: 5 * 60_000,
-    maxRequests: 600,
-    message: "Too many token requests. Try again later.",
-  }));
-  app.post("/revoke", createFixedWindowRateLimiter({
-    windowMs: 5 * 60_000,
-    maxRequests: 600,
-    message: "Too many token revocation requests. Try again later.",
-  }));
-}
-function registerStaticAssets(
-  app: ReturnType<typeof createMcpExpressApp>,
-): void {
-  app.options("/mcp-app-assets/{*asset}", (_req, res) => {
-    setAssetHeaders(res);
-    res.sendStatus(204);
-  });
-  app.use(
-    "/brand-assets",
-    express.static(brandAssetDirectory(), {
-      maxAge: "1d",
-      fallthrough: false,
-      setHeaders: setAssetHeaders,
-    }),
-  );
-  app.use(
-    "/mcp-app-assets",
-    express.static(uiBuildDirectory(), {
-      immutable: true,
-      maxAge: "1y",
-      fallthrough: false,
-      setHeaders: setAssetHeaders,
-    }),
-  );
-}
-
 if (await isMainModule(import.meta.url)) {
   const { app, config } = createServer();
   const httpServer = app.listen(config.port, config.host, () => {
@@ -743,7 +804,7 @@ if (await isMainModule(import.meta.url)) {
     console.log(
       `asset logging: ${config.logging.assets ? "enabled" : "disabled"}`,
     );
-    console.log("trust proxy: loopback only");
+    console.log("trust proxy: disabled for local-control authorization");
   });
   hardenHttpServer(httpServer);
 }

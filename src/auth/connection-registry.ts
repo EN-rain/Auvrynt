@@ -33,6 +33,8 @@ export function identifyProvider(clientName?: string, userAgent?: string): strin
     ["cursor", "Cursor"],
     ["windsurf", "Windsurf"],
     ["gemini", "Gemini"],
+    ["google", "Gemini"],
+    ["googleusercontent", "Gemini"],
     ["vscode", "VS Code"],
     ["visual studio code", "VS Code"],
     ["codex", "Codex"],

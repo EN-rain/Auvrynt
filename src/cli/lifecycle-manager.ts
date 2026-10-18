@@ -15,9 +15,11 @@ import {
   getProcessIdentity,
   isProcessRunning,
   parseIntegrationProfiles,
+  profilesFromIntegrationConfig,
   processIdentityMatches,
   readJsonFile,
   rotateLogFile,
+  resolveSavedWorkspaceRoot,
   type InstanceLockRecord,
   type IntegrationKey,
   type ManagedTunnelRecord,
@@ -38,6 +40,7 @@ import {
   type ManagedTunnelOptions,
 } from "../tunnels/tunnel-manager.js";
 import { startCloudflaredService, stopCloudflaredService } from "../tunnels/cloudflared-service.js";
+import { persistedSelectionConfig } from "./profile-persistence.js";
 
 export interface ActiveInstance {
   stateDir: string;
@@ -85,10 +88,12 @@ export function applyIntegrationProfile(profiles: IntegrationKey[]): void {
     blender: "AUVRYNT_BLENDER_ENABLED",
     aseprite: "AUVRYNT_ASEPRITE_ENABLED",
     serena: "AUVRYNT_SERENA_INTEGRATION_ENABLED",
+    solOrchestrator: "AUVRYNT_SOL_ORCHESTRATOR_ENABLED",
     playwright: "AUVRYNT_PLAYWRIGHT_ENABLED",
-    context7: "AUVRYNT_CONTEXT7_ENABLED",
-    obsidian: "AUVRYNT_OBSIDIAN_ENABLED",
     roblox: "AUVRYNT_ROBLOX_ENABLED",
+    desktop: "AUVRYNT_DESKTOP_ENABLED",
+    krita: "AUVRYNT_KRITA_ENABLED",
+    openPencil: "AUVRYNT_OPEN_PENCIL_ENABLED",
   };
   for (const key of INTEGRATION_KEYS) {
     process.env[environmentKeys[key]] = selected.has(key) ? "true" : "false";
@@ -128,6 +133,9 @@ export function createLifecycleManager(selfHealStartIntegrations: IntegrationBoo
     const result = await response.json().catch(() => ({})) as { error?: string };
     if (!response.ok) throw new Error(result.error || `The running Auvrynt instance rejected the update (${response.status}).`);
     active.record.profiles = profiles;
+    writeAuvryntConfig(
+      persistedSelectionConfig(profiles, active.record.launchRoot ?? resolve(process.cwd())),
+    );
     await atomicWriteJson(active.lockPath, active.record);
   }
 
@@ -224,7 +232,14 @@ export function createLifecycleManager(selfHealStartIntegrations: IntegrationBoo
     if (config.executables.godot && !process.env.GODOT_EXECUTABLE) {
       process.env.GODOT_EXECUTABLE = config.executables.godot;
     }
-    const profiles = request.profiles ?? [];
+    const savedFiles = loadAuvryntFiles();
+    const profiles = request.profiles
+      ?? active?.record.profiles
+      ?? profilesFromIntegrationConfig(savedFiles.config.integrations);
+    const effectiveLaunchRoot = request.profiles === undefined && !request.replace
+      ? resolve(active?.record.launchRoot ?? resolveSavedWorkspaceRoot(savedFiles.config, launchRoot))
+      : resolve(launchRoot);
+    const persistedConfig = persistedSelectionConfig(profiles, effectiveLaunchRoot);
     if (active) {
       let replace = request.replace;
       if (!replace && stdin.isTTY && stdout.isTTY) {
@@ -236,12 +251,12 @@ export function createLifecycleManager(selfHealStartIntegrations: IntegrationBoo
         replace = true;
       }
       if (!replace) throw new Error(`Auvrynt is already running (PID ${active.record.pid}). Re-run with --replace to override it.`);
-      if (resolve(active.record.launchRoot ?? launchRoot) === resolve(launchRoot) && active.record.controlToken) {
+      if (resolve(active.record.launchRoot ?? effectiveLaunchRoot) === effectiveLaunchRoot && active.record.controlToken) {
         await updateActiveProfiles(active, profiles);
         const tunnel = await readManagedTunnel(managedTunnelOptions(active.stateDir, active.record.port, config.tunnelProvider, config));
         printConsolePanel("Auvrynt updated", [
           { label: "PID", value: String(active.record.pid) },
-          { label: "Workspace", value: active.record.launchRoot ?? launchRoot },
+          { label: "Workspace", value: active.record.launchRoot ?? effectiveLaunchRoot },
           { label: "Integrations", value: profiles.map((key) => INTEGRATION_LABELS[key]).join(", ") || "none" },
           { label: "Dashboard", value: dashboardUrl(active.record.host, active.record.port) },
           ...(tunnel ? [{ label: "Public MCP", value: `${tunnel.url}/mcp` }] : []),
@@ -253,10 +268,10 @@ export function createLifecycleManager(selfHealStartIntegrations: IntegrationBoo
     }
 
     await mkdir(config.stateDir, { recursive: true, mode: 0o700 });
-    await selfHealStartIntegrations(launchRoot, config.executables, integrationsForProfiles(profiles));
+    await selfHealStartIntegrations(effectiveLaunchRoot, config.executables, integrationsForProfiles(profiles));
     const tunnelOptions = managedTunnelOptions(config.stateDir, config.port, config.tunnelProvider, config);
     const managesCustomTunnel = config.tunnelProvider !== "custom"
-      || (Boolean(config.cloudflareTunnelToken) && process.platform !== "win32");
+      || (Boolean(config.cloudflareTunnelToken) && (config.cloudflareTokenManaged || process.platform !== "win32"));
     const tunnelResult = managesCustomTunnel ? await ensureManagedTunnel(tunnelOptions) : undefined;
     const publicBaseUrl = tunnelResult?.record.url ?? config.publicBaseUrl;
     if (config.tunnelProvider === "custom" && !managesCustomTunnel) {
@@ -273,14 +288,14 @@ export function createLifecycleManager(selfHealStartIntegrations: IntegrationBoo
     else childArgs.push("--no-integrations");
     const controlToken = randomBytes(32).toString("base64url");
     const child = spawn(process.execPath, childArgs, {
-      cwd: launchRoot,
+      cwd: effectiveLaunchRoot,
       detached: true,
       stdio: ["ignore", logHandle, logHandle],
       windowsHide: true,
       env: {
         ...process.env,
         AUVRYNT_CONTROL_TOKEN: controlToken,
-        ...(config.tunnelProvider === "custom" ? {} : { AUVRYNT_MANAGED_TUNNEL_URL: publicBaseUrl }),
+        ...(managesCustomTunnel ? { AUVRYNT_MANAGED_TUNNEL_URL: publicBaseUrl } : {}),
       },
     });
     closeSync(logHandle);
@@ -293,6 +308,7 @@ export function createLifecycleManager(selfHealStartIntegrations: IntegrationBoo
     child.unref();
     try {
       await waitForBackgroundReady(config.stateDir, child.pid, config.host, config.port, () => childSpawnError);
+      writeAuvryntConfig(persistedConfig);
     } catch (error) {
       await terminateRootProcess(child.pid).catch(() => undefined);
       if (tunnelResult?.created) {
@@ -302,7 +318,7 @@ export function createLifecycleManager(selfHealStartIntegrations: IntegrationBoo
     }
     printConsolePanel("Auvrynt started", [
       { label: "PID", value: String(child.pid) },
-      { label: "Workspace", value: launchRoot },
+      { label: "Workspace", value: effectiveLaunchRoot },
       { label: "Integrations", value: profiles.map((key) => INTEGRATION_LABELS[key]).join(", ") || "no optional integrations" },
       { label: "Dashboard", value: dashboardUrl(config.host, config.port) },
       { label: "Public MCP", value: `${publicBaseUrl}/mcp` },
@@ -312,7 +328,8 @@ export function createLifecycleManager(selfHealStartIntegrations: IntegrationBoo
   async function start(request: StartRequest, launchRoot = resolve(process.cwd())): Promise<void> {
     const config = loadConfig();
     const management = await acquireManagementLock(config.stateDir);
-    const useCloudflaredService = process.platform === "win32" && config.tunnelProvider === "custom";
+    const useCloudflaredService = process.platform === "win32" && config.tunnelProvider === "custom"
+      && !config.cloudflareTokenManaged;
     let serviceStarted = false;
     try {
       if (useCloudflaredService) serviceStarted = await startCloudflaredService();
@@ -385,7 +402,7 @@ export function createLifecycleManager(selfHealStartIntegrations: IntegrationBoo
         } catch (error) {
           tunnelError = error;
         }
-        if (process.platform === "win32" && config.tunnelProvider === "custom") {
+        if (process.platform === "win32" && config.tunnelProvider === "custom" && !config.cloudflareTokenManaged) {
           try {
             await stopCloudflaredService();
           } catch (error) {
@@ -427,8 +444,6 @@ export function createLifecycleManager(selfHealStartIntegrations: IntegrationBoo
         const profiles = request.profiles ?? active?.record.profiles;
         if (!profiles) await ensureIntegrationChoicesConfigured();
         const restartRoot = resolve(active?.record.launchRoot ?? launchRoot);
-        process.env.AUVRYNT_ALLOWED_ROOTS = restartRoot;
-        process.env.AUVRYNT_WORKTREE_ROOT = restartRoot;
         if (active) {
           await adoptLegacyManagedTunnel(active);
           await stopActiveInstance(active);
@@ -453,8 +468,6 @@ export function createLifecycleManager(selfHealStartIntegrations: IntegrationBoo
       const profiles = request.profiles ?? active.record.profiles
         ?? INTEGRATION_KEYS.filter((key) => completeIntegrationsConfig(loadAuvryntFiles().config.integrations)[key]);
       const restartRoot = resolve(active.record.launchRoot ?? launchRoot);
-      process.env.AUVRYNT_ALLOWED_ROOTS = restartRoot;
-      process.env.AUVRYNT_WORKTREE_ROOT = restartRoot;
       const tunnelBefore = await adoptLegacyManagedTunnel(active)
         ?? await readManagedTunnel(managedTunnelOptions(active.stateDir, active.record.port, config.tunnelProvider, config));
       await stopActiveInstance(active);

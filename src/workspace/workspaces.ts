@@ -128,22 +128,27 @@ export class WorkspaceRegistry {
       throw new Error(`Workspace ${workspaceId} has been closed. Call open_workspace to reopen.`);
     }
 
-    const root = this.assertWorkspaceRootAllowed(session.root, session.mode, session.sourceRoot);
+    let root = this.assertWorkspaceRootAllowed(session.root, session.mode, session.sourceRoot);
     if (this.workspaces.size + this.pendingWorkspaceOpens >= this.maxActiveWorkspaces) {
       throw new Error(`Workspace capacity reached (max ${this.maxActiveWorkspaces} active workspaces).`);
     }
 
     if (session.mode === "worktree" && !existsSync(root)) {
-      console.warn(`[auvrynt] Worktree directory for session ${session.id} no longer exists at ${root}. Falling back to checkout mode.`);
+      const sourceRoot = session.sourceRoot && assertAllowedPath(session.sourceRoot, this.config.allowedRoots);
+      if (!sourceRoot || !existsSync(sourceRoot)) {
+        throw new Error(`Stored worktree workspace ${session.id} is missing both its managed worktree and source checkout.`);
+      }
+      console.warn(`[auvrynt] Worktree directory for session ${session.id} no longer exists at ${root}. Falling back to source checkout ${sourceRoot}.`);
+      root = sourceRoot;
       session.mode = "checkout";
-      this.store?.updateSession(session.id, { mode: "checkout" });
+      this.store?.updateSession(session.id, { mode: "checkout", root });
     }
 
     const restoredWorkspace: Workspace = {
       id: session.id,
       root,
       mode: session.mode,
-      sourceRoot: session.sourceRoot,
+      sourceRoot: session.mode === "worktree" ? session.sourceRoot : undefined,
       worktree:
         session.mode === "worktree"
           ? {

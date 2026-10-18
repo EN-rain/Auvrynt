@@ -3,6 +3,7 @@ import * as z from "zod/v4";
 import type { ServerConfig } from "../../config.js";
 import { logEvent } from "../../logger.js";
 import type { ProcessManager } from "../../processes.js";
+import type { SerenaManager } from "../../serena-manager.js";
 import { getRequestContext, requireRequestContext } from "../../request-context.js";
 import type { createReviewCheckpointManager } from "../../review-checkpoints.js";
 import type { RoomRegistry } from "../../room-registry.js";
@@ -12,6 +13,7 @@ import { formatAgentsPath, type WorkspaceRegistry } from "../../workspaces.js";
 import { registerAppTool } from "../mcp-tool-registrar.js";
 import { MUTATING_ANNOTATIONS, PROCESS_ANNOTATIONS, toolWidgetDescriptorMeta } from "../tool-registration-shared.js";
 import type { WorkspaceChangeTracker } from "../workspace-analytics.js";
+import { cleanupWorkspaceResources } from "../workspace-resource-cleanup.js";
 
 const workspaceSkillOutputSchema = z.object({
   name: z.string(),
@@ -37,6 +39,7 @@ export function registerWorkspaceLifecycleTools(
   workspaces: WorkspaceRegistry,
   reviewCheckpoints: ReturnType<typeof createReviewCheckpointManager>,
   processManager: ProcessManager,
+  serenaManager: SerenaManager,
   roomRegistry: RoomRegistry,
   sessionRegistry: SessionRegistry,
   workspaceChanges: WorkspaceChangeTracker,
@@ -148,13 +151,42 @@ export function registerWorkspaceLifecycleTools(
   }, async ({ workspaceId }) => {
     const startedAt = performance.now();
     const ctx = requireRequestContext();
-    roomRegistry.closeOwned(ctx.ownerClientId, workspaceId);
-    const stopped = await processManager.stopAllProcessesForWorkspace(workspaceId);
-    workspaces.markClosed(workspaceId);
-    logToolCall(config, {
-      tool: "close_workspace", workspaceId, success: true,
-      durationMs: Math.round(performance.now() - startedAt),
-    });
-    return { content: [{ type: "text" as const, text: `Workspace ${workspaceId} closed. ${stopped} processes stopped.` }] };
+    roomRegistry.requireWorkspaceAccess(ctx.ownerClientId, workspaceId);
+    workspaces.getWorkspace(workspaceId);
+
+    try {
+      const cleanup = await cleanupWorkspaceResources(workspaceId, processManager, serenaManager);
+      try {
+        await reviewCheckpoints.releaseWorkspace({ workspaceId });
+      } catch (error) {
+        logEvent(config.logging, "warn", "review_checkpoint_release_failed", {
+          workspaceId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      roomRegistry.closeWorkspace(workspaceId);
+      sessionRegistry.unbindWorkspaceEverywhere(workspaceId);
+      workspaceChanges.deactivateWorkspace(workspaceId);
+      workspaces.markClosed(workspaceId);
+      logToolCall(config, {
+        tool: "close_workspace", workspaceId, success: true,
+        durationMs: Math.round(performance.now() - startedAt),
+      });
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Workspace ${workspaceId} closed. Released ${cleanup.processesStopped} processes, ${cleanup.serenaSessionsStopped} Serena sessions, ${cleanup.browserSessionsClosed} browser sessions, and ${cleanup.desktopStreamsStopped} desktop streams.`,
+        }],
+      };
+    } catch (error) {
+      logToolCall(config, {
+        tool: "close_workspace",
+        workspaceId,
+        success: false,
+        durationMs: Math.round(performance.now() - startedAt),
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   });
 }

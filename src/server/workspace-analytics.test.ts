@@ -75,5 +75,12 @@ assert.equal(tracker.snapshot().additions, 19, "reopening the same root must pre
 tracker.activateWorkspace("ws_b", "C:/projects/no-git");
 assert.equal(tracker.snapshot().workspaceRoot, "C:/projects/no-git");
 assert.equal(tracker.snapshot().additions, 0);
+assert.equal(tracker.deactivateWorkspace("missing"), false);
+assert.equal(tracker.deactivateWorkspace("ws_b"), true);
+assert.equal(tracker.snapshot().workspaceId, undefined);
+tracker.activateWorkspace("ws_a_reconnected", "C:/projects/a");
+assert.equal(tracker.snapshot().additions, 19);
+assert.equal(tracker.deactivateWorkspace("ws_a_reconnected"), true);
+assert.equal(tracker.snapshot().workspaceId, undefined);
 
 console.log("Auvrynt workspace activity analytics tests passed!");

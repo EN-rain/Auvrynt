@@ -281,14 +281,6 @@ export async function blenderGetActiveModeAndStatus(
   }
 }
 
-export async function blenderGetConsoleErrors(
-  registry: WorkspaceRegistry,
-  input: { workspaceId: string },
-): Promise<ToolResponse> {
-  // Simple check for Blender's stderr log lines
-  return textResponse(JSON.stringify({ errors: [], count: 0 }, null, 2));
-}
-
 // ─── Object Inspection and Editing ───────────────────────────────────────────
 
 export async function blenderInspectObject(
@@ -1137,7 +1129,7 @@ export async function blenderExecutePython(
 ): Promise<ToolResponse> {
   try {
     const client = getBlenderClient(input.workspaceId);
-    const res = await client.sendExecute(input.code, false);
+    const res = await client.sendExecute(input.code);
     return textResponse(JSON.stringify(res, null, 2));
   } catch (err: any) {
     return errorResponse(`Python execution failed: ${err.message}`);
@@ -1274,12 +1266,15 @@ async function createPrimitive(
   args: string,
   kwargs: string,
   resultKeys: string,
+  objectName?: string,
 ): Promise<ToolResponse> {
   try {
     const client = getBlenderClient(workspaceId);
+    const rename = objectName ? `obj = bpy.context.object\nobj.name = ${JSON.stringify(objectName)}\n` : "";
     const res = await client.sendExecute(
       "import bpy\n" +
       `bpy.ops.mesh.${opName}(${args}${args && kwargs ? ", " : ""}${kwargs})\n` +
+      rename +
       "obj = bpy.context.object\n" +
       `result = ${resultKeys}\n`,
     );
@@ -1296,17 +1291,7 @@ export async function blenderCreatePlane(
   const size = input.size ?? 2;
   const loc = input.location ? `(${input.location.map((v) => v ?? 0).join(", ")})` : "(0, 0, 0)";
   const res = await createPrimitive(registry, input.workspaceId, "primitive_plane_add",
-    `size=${size}`, `location=${loc}`, "{'name': obj.name, 'type': obj.type, 'location': list(obj.location)}");
-  if (input.name && !res.isError) {
-    const client = getBlenderClient(input.workspaceId);
-    try {
-      await client.sendExecute(
-        "import bpy\n" +
-        `obj = bpy.context.object\nobj.name = ${JSON.stringify(input.name)}\n` +
-        "result = {'name': obj.name}\n",
-      );
-    } catch { /* rename best-effort */ }
-  }
+    `size=${size}`, `location=${loc}`, "{'name': obj.name, 'type': obj.type, 'location': list(obj.location)}", input.name);
   return res;
 }
 
@@ -1319,7 +1304,7 @@ export async function blenderCreateCircle(
   const fillType = input.fillType ?? "NGON";
   const loc = input.location ? `(${input.location.map((v) => v ?? 0).join(", ")})` : "(0, 0, 0)";
   return createPrimitive(registry, input.workspaceId, "primitive_circle_add",
-    `vertices=${vertices}, radius=${radius}`, `fill_type='${fillType}', location=${loc}`,
+    `vertices=${vertices}, radius=${radius}`, `fill_type=${JSON.stringify(fillType)}, location=${loc}`,
     "{'name': obj.name, 'type': obj.type, 'location': list(obj.location)}");
 }
 
@@ -1446,7 +1431,7 @@ export async function blenderCreateLight(
     const loc = input.location ? `(${input.location.map((v) => v ?? 0).join(", ")})` : "(4, 4, 6)";
     const res = await client.sendExecute(
       "import bpy\n" +
-      `bpy.ops.object.light_add(type='${lightType}', location=${loc})\n` +
+      `bpy.ops.object.light_add(type=${JSON.stringify(lightType)}, location=${loc})\n` +
       "obj = bpy.context.object\n" +
       `obj.data.energy = ${energy}\n` +
       `obj.data.color = ${color}\n` +
@@ -1469,7 +1454,7 @@ export async function blenderCreateEmpty(
     const loc = input.location ? `(${input.location.map((v) => v ?? 0).join(", ")})` : "(0, 0, 0)";
     const res = await client.sendExecute(
       "import bpy\n" +
-      `bpy.ops.object.empty_add(type='${emptyType}', location=${loc})\n` +
+      `bpy.ops.object.empty_add(type=${JSON.stringify(emptyType)}, location=${loc})\n` +
       "obj = bpy.context.object\n" +
       `if ${JSON.stringify(input.name ?? "")}:\n    obj.name = ${JSON.stringify(input.name ?? "")}\n` +
       "result = {'name': obj.name, 'type': obj.type, 'location': list(obj.location)}\n",
@@ -2730,7 +2715,7 @@ export async function blenderExportFbx(
     const useSelected = input.useSelected ?? false;
     const res = await client.sendExecute(
       "import bpy\n" +
-      `bpy.ops.export_scene.fbx(filepath=${JSON.stringify(absPath)}, use_selection=${useSelected ? "True" : "False"}, apply_scale_options='${applyScale}')\n` +
+      `bpy.ops.export_scene.fbx(filepath=${JSON.stringify(absPath)}, use_selection=${useSelected ? "True" : "False"}, apply_scale_options=${JSON.stringify(applyScale)})\n` +
       `result = {'exported': ${JSON.stringify(absPath)}}\n`,
     );
     return textResponse(JSON.stringify(res, null, 2));
@@ -2860,4 +2845,3 @@ export async function blenderInsertKeyframe(
     return errorResponse(`Insert keyframe failed: ${err.message}`);
   }
 }
-

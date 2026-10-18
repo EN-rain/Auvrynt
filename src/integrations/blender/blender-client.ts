@@ -80,7 +80,13 @@ export class BlenderClient {
             cleanup();
             try {
               const parsed = JSON.parse(raw);
-              if (parsed.status === "ok") resolve(parsed.result || {});
+              if (parsed.status === "ok") {
+                if (strictJson && !Object.prototype.hasOwnProperty.call(parsed, "result")) {
+                  reject(new Error("Blender execution completed without an explicit result; set result before retrying."));
+                  return;
+                }
+                resolve(Object.prototype.hasOwnProperty.call(parsed, "result") ? parsed.result : {});
+              }
               else reject(new Error(parsed.message || "Unknown Blender execution error"));
             } catch (error) {
               reject(new Error(`Failed to parse Blender JSON response: ${error instanceof Error ? error.message : String(error)}`));

@@ -9,11 +9,18 @@ export const sceneCatalogTools: CatalogTool[] = [
     params: [],
     build: () =>
       "import bpy\n" +
+      "def _stable_text(value):\n" +
+      "    if value is None:\n" +
+      "        return ''\n" +
+      "    if isinstance(value, bytes):\n" +
+      "        return value.decode('utf-8', errors='replace')\n" +
+      "    return str(value)\n" +
+      "build_hash = getattr(bpy.app, 'build_hash', None) or getattr(bpy.app, 'build_commit_hash', b'') or b''\n" +
       "result = {\n" +
       "    'version': bpy.app.version_string,\n" +
       "    'version_tuple': list(bpy.app.version),\n" +
-      "    'build_date': bpy.app.build_date,\n" +
-      "    'build_commit': bpy.app.build_commit_hash or '',\n" +
+      "    'build_date': _stable_text(getattr(bpy.app, 'build_date', '')),\n" +
+      "    'build_commit': _stable_text(build_hash),\n" +
       "    'binary_path': bpy.app.binary_path,\n" +
       "}\n",
   },

@@ -43,6 +43,14 @@ import { RoomRegistry } from "./room-registry.js";
 {
   const registry = new RoomRegistry();
   assert.doesNotThrow(() => registry.close("nonexistent-room-id"));
+  assert.equal(registry.closeWorkspace("nonexistent-workspace"), false);
+}
+
+{
+  const registry = new RoomRegistry();
+  registry.create("owner-root-update", "ws-root-update");
+  assert.equal(registry.closeWorkspace("ws-root-update"), true);
+  assert.equal(registry.getByWorkspace("ws-root-update"), undefined);
 }
 
 {

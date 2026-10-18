@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../../infrastructure/config.js";
 import { compareImages, inspectImage, inspectSprite, splitSpriteSheet } from "./image-tools.js";
-import { decodePng, encodePng } from "./integrations/images/png-codec.js";
+import { decodePng, encodePng } from "./png-codec.js";
 import { WorkspaceRegistry } from "../../workspace/workspaces.js";
 
 const root = await mkdtemp(join(tmpdir(), "auvrynt-img-test-"));

@@ -1,6 +1,8 @@
 import { AUVRYNT_COMMANDS } from "../infrastructure/command-reference.js";
 import { DASHBOARD_PAGE_CSS } from "./dashboard-page-styles.js";
+import { dashboardModeSwitcher } from "./dashboard-shell.js";
 import type { DashboardView } from "./dashboard.js";
+import { MAX_ALLOWED_ROOTS } from "../workspace/roots.js";
 
 const PAGE_META = {
   analytics: {
@@ -35,9 +37,10 @@ const PAGE_META = {
   },
 } as const;
 
-export function dashboardHtml(view: DashboardView, nonce: string): string {
+export function dashboardHtml(view: DashboardView, nonce: string, dashboardControlToken: string): string {
   const commands = commandMarkup();
   const initialData = jsonForHtml(view);
+  const dashboardControlTokenJson = jsonForHtml(dashboardControlToken);
   const firstRoot = view.allowedRoots[0] ?? "";
 
   return `<!doctype html>
@@ -53,9 +56,12 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
   <body>
     <div class="app-shell">
       <aside class="control-rail" aria-label="Auvrynt controls">
-        <div class="brand">
+        <div class="dashboard-brand-row">
+          <div class="brand">
           <img src="/brand-assets/auvrynt-icon.png" alt="" width="38" height="38" />
           <div><span class="brand-name">Auvrynt</span><span class="brand-version">PID <span id="rail-pid">${view.pid}</span></span></div>
+          </div>
+          ${dashboardModeSwitcher("code")}
         </div>
 
         <section class="agent-presence" id="agent-presence" data-state="${view.agentState}" aria-live="polite">
@@ -147,10 +153,22 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
               <div class="connection-list">
                 <div class="connection-row"><span class="connection-label">Local MCP</span><span class="connection-value"><a id="local-mcp" href="${escapeHtml(view.localMcpUrl)}">${escapeHtml(view.localMcpUrl)}</a></span><button class="icon-button" type="button" data-copy-url="local" aria-label="Copy Local MCP URL" title="Copy Local MCP URL">⧉</button></div>
                 <div class="connection-row"><span class="connection-label">Public MCP</span><span class="connection-value"><a id="public-mcp" href="${escapeHtml(view.publicMcpUrl)}">${escapeHtml(view.publicMcpUrl)}</a></span><button class="icon-button" type="button" data-copy-url="public" aria-label="Copy Public MCP URL" title="Copy Public MCP URL">⧉</button></div>
+                <div class="connection-row"><span class="connection-label">Arbiter</span><span class="connection-value" id="arbiter-status"></span><span aria-hidden="true"></span></div>
+                <div class="connection-row"><span class="connection-label">MCP latency</span><span class="connection-value" id="mcp-request-timing">No samples yet</span><span aria-hidden="true"></span></div>
                 <div class="connection-row"><span class="connection-label">Workspace</span><span class="connection-value" id="workspace" title="${escapeHtml(firstRoot)}">${escapeHtml(firstRoot || "No workspace configured")}</span><button class="icon-button" id="edit-workspace" type="button" aria-label="Choose workspace folder" title="Choose workspace folder"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 6.5h6l2 2h9v9.75a1.75 1.75 0 0 1-1.75 1.75H5.25a1.75 1.75 0 0 1-1.75-1.75z"/><path d="M3.5 9h17"/></svg></button></div>
                 <form class="session-limit-form" id="session-limit-form"><div class="session-limit-copy"><strong>MCP session limit</strong><small>Maximum concurrent connections</small></div><input class="session-limit-input" id="session-limit-input" type="text" inputmode="numeric" pattern="[1-9][0-9]{0,2}" maxlength="3" value="${view.maxSessions}" aria-label="Maximum concurrent MCP sessions" /><button class="icon-button" id="save-session-limit" type="submit" aria-label="Apply MCP session limit" title="Apply MCP session limit"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l10.5-10.5a2.12 2.12 0 0 0-3-3L5 17v3z"/><path d="m13.5 8.5 3 3"/></svg></button></form>
                 <form class="session-limit-form session-idle-timeout-form" id="session-idle-timeout-form"><div class="session-limit-copy"><strong>MCP idle timeout</strong><small>Inactive sessions close; active tool calls are protected</small></div><input class="session-limit-input" id="session-idle-timeout-input" type="text" inputmode="numeric" pattern="[1-9][0-9]{0,4}" maxlength="5" value="${view.sessionIdleTimeoutMinutes}" aria-label="MCP idle timeout in minutes" /><span class="session-time-unit">min</span><button class="icon-button" id="save-session-idle-timeout" type="submit" aria-label="Apply MCP idle timeout" title="Apply MCP idle timeout"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l10.5-10.5a2.12 2.12 0 0 0-3-3L5 17v3z"/><path d="m13.5 8.5 3 3"/></svg></button></form>
+                <form class="session-limit-form" id="tool-display-form"><div class="session-limit-copy"><strong>Tool Call Display</strong><small>Compact keeps short tool text without custom result cards</small></div><select class="session-limit-input" id="tool-display-select" aria-label="Tool Call Display mode"><option value="compact"${view.widgets === "compact" ? " selected" : ""}>Compact</option><option value="changes"${view.widgets === "changes" ? " selected" : ""}>Changes only</option><option value="full"${view.widgets === "full" ? " selected" : ""}>Full cards</option><option value="off"${view.widgets === "off" ? " selected" : ""}>Off</option></select><button class="icon-button" id="save-tool-display" type="submit" aria-label="Apply Tool Call Display mode" title="Apply Tool Call Display mode"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l10.5-10.5a2.12 2.12 0 0 0-3-3L5 17v3z"/><path d="m13.5 8.5 3 3"/></svg></button></form>
               </div>
+            </section>
+
+            <section class="section-surface" aria-labelledby="agent-directories-title">
+              <div class="section-head">
+                <div><h2 id="agent-directories-title">Agent directories</h2><p>Directories web agents can access through Auvrynt. Up to ${MAX_ALLOWED_ROOTS} directories.</p></div>
+                <button class="button section-action" id="add-directory" type="button">Add directory</button>
+              </div>
+              <div class="directory-profile-notes" id="agent-directory-profile-notes" aria-label="Profile directory notes"></div>
+              <div class="directory-list" id="agent-directories" aria-live="polite"></div>
             </section>
 
             <section class="section-surface" aria-labelledby="integrations-title">
@@ -171,6 +189,12 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
           </div>
         </section>
         <section class="dashboard-view" id="view-secrets" role="tabpanel" aria-labelledby="tab-secrets" data-view-panel="secrets" hidden>
+          <div class="secret-copy-bar" aria-labelledby="web-agent-secret-title">
+            <span class="secret-copy-title" id="web-agent-secret-title">Web-agent authentication</span>
+            <button class="button primary" id="copy-web-agent-secret" type="button" aria-describedby="web-agent-secret-help">Copy secret</button>
+            <p class="secret-copy-help" id="web-agent-secret-help">Copies the local Owner token used to authenticate a web agent. Keep it private.</p>
+            <p class="secret-copy-status" id="web-agent-secret-status" role="status" aria-live="polite"></p>
+          </div>
           <div class="secrets-layout">
             <section class="section-surface" aria-labelledby="secret-add-title">
               <div class="section-head"><div><h2 id="secret-add-title">Add ngrok authtoken</h2><p>Values stay in the private local Auvrynt auth file and are never returned to this page.</p></div></div>
@@ -187,16 +211,6 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
               <div class="token-list" id="ngrok-token-list"></div>
             </section>
 
-            <section class="section-surface" aria-labelledby="context7-secret-title">
-              <div class="section-head"><div><h2 id="context7-secret-title">Context7 API key</h2><p>Stored only in the private local Auvrynt auth file. The raw key is never shown again.</p></div></div>
-              <form class="secret-form" id="context7-key-form" autocomplete="off">
-                <label class="secret-label" for="context7-key-input">Context7 API key</label>
-                <div class="secret-input-row"><input class="secret-input" id="context7-key-input" type="password" minlength="8" maxlength="512" spellcheck="false" autocomplete="new-password" placeholder="Paste Context7 API key" /><button class="button primary" id="save-context7-key" type="submit">Save key</button></div>
-                <p class="secret-help">Get a free key at context7.com/dashboard. Auvrynt keeps only a SHA-256 fingerprint on this page. Override with AUVRYNT_CONTEXT7_API_KEY if needed.</p>
-              </form>
-              <div class="token-list" id="context7-key-status"></div>
-              <p class="secret-warning" id="context7-environment-warning" hidden>AUVRYNT_CONTEXT7_API_KEY currently overrides the saved key. Remove the environment variable to manage it here.</p>
-            </section>
           </div>
         </section>
 
@@ -230,6 +244,8 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
     <script nonce="${escapeHtml(nonce)}">
       (() => {
         const pageMeta = ${jsonForHtml(PAGE_META)};
+        const dashboardControlToken = ${dashboardControlTokenJson};
+        const maxAllowedRoots = ${MAX_ALLOWED_ROOTS};
         let state = ${initialData};
         let activeFilter = "all";
         let knownNewestId = state.logs[0]?.id ?? 0;
@@ -240,6 +256,9 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
         let activeView = viewNames.includes(window.location.hash.slice(1)) ? window.location.hash.slice(1) : "analytics";
         const logs = document.getElementById("log-list");
         const integrations = document.getElementById("integrations");
+        const directories = document.getElementById("agent-directories");
+        const directoryProfileNotes = document.getElementById("agent-directory-profile-notes");
+        const addDirectoryButton = document.getElementById("add-directory");
         const skillList = document.getElementById("skill-list-connectivity");
         const skillsMeta = document.getElementById("skills-meta-connectivity");
         const notice = document.getElementById("action-notice");
@@ -257,11 +276,8 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
         const addNgrokTokenButton = document.getElementById("add-ngrok-token");
         const ngrokTokenList = document.getElementById("ngrok-token-list");
         const ngrokEnvironmentWarning = document.getElementById("ngrok-environment-warning");
-        const context7KeyForm = document.getElementById("context7-key-form");
-        const context7KeyInput = document.getElementById("context7-key-input");
-        const saveContext7KeyButton = document.getElementById("save-context7-key");
-        const context7KeyStatus = document.getElementById("context7-key-status");
-        const context7EnvironmentWarning = document.getElementById("context7-environment-warning");
+        const copyWebAgentSecretButton = document.getElementById("copy-web-agent-secret");
+        const webAgentSecretStatus = document.getElementById("web-agent-secret-status");
         const restartButton = document.getElementById("restart");
         const stopButton = document.getElementById("stop");
         const lifecycleOverlay = document.getElementById("lifecycle-overlay");
@@ -278,6 +294,9 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
         const sessionIdleTimeoutForm = document.getElementById("session-idle-timeout-form");
         const sessionIdleTimeoutInput = document.getElementById("session-idle-timeout-input");
         const saveSessionIdleTimeoutButton = document.getElementById("save-session-idle-timeout");
+        const toolDisplayForm = document.getElementById("tool-display-form");
+        const toolDisplaySelect = document.getElementById("tool-display-select");
+        const saveToolDisplayButton = document.getElementById("save-tool-display");
         const toolsIntegrationTabs = document.getElementById("tools-integration-tabs");
         const toolsSubTabs = document.getElementById("tools-sub-tabs");
         const toolsSearch = document.getElementById("tools-search");
@@ -380,7 +399,7 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
           if (nextState.agentState === "working") return { title: provider + " working", headline: provider + " is actively using Auvrynt.", caption: nextState.activeToolCalls + " tool call" + (nextState.activeToolCalls === 1 ? " is" : "s are") + " executing now." };
           if (nextState.agentState === "connected") return { title: provider + " connected", headline: provider + " is connected and ready.", caption: nextState.sessions + " authenticated MCP session" + (nextState.sessions === 1 ? " is" : "s are") + " currently open." };
           if (nextState.agentState === "stopping") return { title: "Server stopping", headline: "Auvrynt is closing active connections.", caption: "The dashboard will stop refreshing when shutdown completes." };
-          return { title: "Waiting for AI", headline: "Auvrynt is online and ready.", caption: "Connect ChatGPT, Claude, or another MCP-compatible AI client." };
+          return { title: "Waiting for AI", headline: "Auvrynt is online and ready.", caption: "Connect ChatGPT, Claude, Gemini, or another MCP-compatible AI client." };
         }
 
         function setActiveView(view, updateHash = true) {
@@ -425,6 +444,9 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
           }
           if (document.activeElement !== sessionIdleTimeoutInput && !sessionIdleTimeoutInput.disabled) {
             sessionIdleTimeoutInput.value = String(state.sessionIdleTimeoutMinutes);
+          }
+          if (document.activeElement !== toolDisplaySelect && !toolDisplaySelect.disabled) {
+            toolDisplaySelect.value = state.widgets;
           }
         }
 
@@ -532,9 +554,25 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
           integrations.innerHTML = state.integrations.map((item) => {
             const countBadge = item.toolCount > 0
               ? '<span class="tool-count" title="' + item.toolEnabledCount + ' of ' + item.toolCount + ' tools enabled"><strong>' + item.toolEnabledCount + '</strong>/' + item.toolCount + '</span>'
-              : "";
+              : '<span class="tool-count tool-count-empty" aria-hidden="true"></span>';
             return '<div class="integration-row"><div class="integration-name"><strong>' + escape(item.label) + '</strong><small>' + escape(item.detail) + '</small></div>' + countBadge + '<span class="state ' + item.state + '">' + escape(item.state) + '</span><button class="button integration-toggle" type="button" data-integration="' + escape(item.key) + '" data-enabled="' + item.enabled + '">' + (item.enabled ? "Disable" : "Enable") + '</button></div>';
           }).join("");
+        }
+
+        function renderDirectories() {
+          const roots = Array.isArray(state.allowedRoots) ? state.allowedRoots : [];
+          const requirements = Array.isArray(state.directoryRequirements) ? state.directoryRequirements : [];
+          const atLimit = roots.length >= maxAllowedRoots;
+          addDirectoryButton.disabled = Boolean(lifecycleMode) || atLimit;
+          addDirectoryButton.title = atLimit ? "Maximum of " + maxAllowedRoots + " agent-access directories reached" : "Add directory";
+          addDirectoryButton.setAttribute("aria-label", atLimit ? "Maximum of " + maxAllowedRoots + " agent-access directories reached" : "Add directory");
+          directoryProfileNotes.hidden = requirements.length === 0;
+          directoryProfileNotes.innerHTML = requirements.map((requirement) => '<div class="directory-profile-note"><strong>' + escape(requirement.label) + '</strong><span>' + escape(requirement.note) + '</span></div>').join("");
+          if (!roots.length) {
+            directories.innerHTML = '<div class="empty">No agent-access directories configured.</div>';
+            return;
+          }
+          directories.innerHTML = roots.map((root, index) => '<div class="directory-row"><div class="directory-name"><strong>Directory ' + (index + 1) + '</strong><span class="directory-path" title="' + escape(root) + '">' + escape(root) + '</span></div><button class="button directory-remove" type="button" data-directory-action="remove" data-directory-index="' + index + '" aria-label="Remove ' + escape(root) + '" title="Remove directory" ' + (roots.length === 1 ? 'disabled' : '') + '>Remove</button></div>').join("");
         }
 
         function renderSkills() {
@@ -599,30 +637,44 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
             : '<div class="empty">No managed ngrok tokens saved.</div>';
         }
 
-        function renderContext7() {
-          const context7 = state.context7 || { configured: false, environmentOverride: false };
-          context7EnvironmentWarning.hidden = !context7.environmentOverride;
-          context7KeyInput.disabled = Boolean(context7.environmentOverride);
-          saveContext7KeyButton.disabled = Boolean(context7.environmentOverride);
-          if (context7.configured) {
-            const source = context7.environmentOverride ? 'Environment override' : 'Saved in local auth file';
-            context7KeyStatus.innerHTML = '<div class="token-row"><div class="token-name"><strong>' + escape(context7.fingerprint || 'configured') + '</strong><small>' + escape(source) + '</small></div><span class="token-status active">Configured</span><div class="token-actions"><button class="button token-action stop" type="button" id="clear-context7-key" ' + (context7.environmentOverride ? 'disabled' : '') + '>Remove</button></div></div>';
-          } else {
-            context7KeyStatus.innerHTML = '<div class="empty">No Context7 API key saved.</div>';
-          }
-        }
-
         function renderConnection() {
           const local = document.getElementById("local-mcp");
           const publicUrl = document.getElementById("public-mcp");
+          const arbiterStatus = document.getElementById("arbiter-status");
           local.textContent = state.localMcpUrl;
           local.href = state.localMcpUrl;
           publicUrl.textContent = state.publicMcpUrl;
           publicUrl.href = state.publicMcpUrl;
-          const root = state.allowedRoots[0] || "No workspace configured";
+          if (arbiterStatus) {
+            const arbiter = state.arbiter;
+            if (!arbiter) {
+              arbiterStatus.textContent = "Unavailable";
+            } else {
+              const status = arbiter.enabled
+                ? arbiter.configured ? "enabled / configured" : "enabled / missing API key"
+                : "disabled";
+              arbiterStatus.textContent = status + " · " + arbiter.model + " · " + arbiter.endpoint;
+            }
+          }
+          const timing = state.mcpRequestTimings?.kinds?.all;
+          const timingElement = document.getElementById("mcp-request-timing");
+          if (timing?.totalMs?.count) {
+            const total = timing.totalMs;
+            const auth = timing.authMs;
+            const dispatch = timing.dispatchMs;
+            timingElement.textContent = "p50 " + total.p50 + "ms · p95 " + total.p95 + "ms · p99 " + total.p99 + "ms";
+            timingElement.title = "Samples: " + timing.samples
+              + (auth ? " | auth p50 " + auth.p50 + "ms" : "")
+              + (dispatch ? " | dispatch p50 " + dispatch.p50 + "ms" : "");
+          } else {
+            timingElement.textContent = "No samples yet";
+            timingElement.title = "Rolling MCP timing data appears after requests are handled.";
+          }
+          const roots = Array.isArray(state.allowedRoots) ? state.allowedRoots : [];
+          const root = roots[0] || "No workspace configured";
           const workspace = document.getElementById("workspace");
-          workspace.textContent = root + (state.allowedRoots.length > 1 ? " +" + (state.allowedRoots.length - 1) : "");
-          workspace.title = state.allowedRoots.join("\\n");
+          workspace.textContent = root + (roots.length > 1 ? " +" + (roots.length - 1) : "");
+          workspace.title = roots.join("\\n");
         }
 
         function renderServerState() {
@@ -644,10 +696,10 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
           if (knownNewestId > previousNewestId && logs.scrollTop > 4) unseenLogs += state.logs.filter((entry) => entry.id > previousNewestId).length;
           renderAgentPresence();
           renderConnection();
+          renderDirectories();
           renderIntegrations();
           renderSkills();
           renderNgrok();
-          renderContext7();
           renderAnalytics();
           renderLogs();
           renderServerState();
@@ -684,7 +736,10 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
         async function postAction(path, body) {
           const response = await fetch(path, {
             method: "POST",
-            headers: { "content-type": "application/json", "x-auvrynt-dashboard": "1" },
+            headers: {
+              "content-type": "application/json",
+              "x-auvrynt-dashboard-token": dashboardControlToken,
+            },
             body: JSON.stringify(body ?? {}),
           });
           const result = await response.json().catch(() => ({}));
@@ -723,6 +778,7 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
           document.documentElement.removeAttribute("aria-busy");
           lifecycleOverlay.classList.remove("active", "complete");
           lifecycleOverlay.setAttribute("aria-hidden", "true");
+          renderServerState();
         }
 
         function finishStopLifecycle() {
@@ -840,6 +896,22 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
         window.addEventListener("hashchange", () => setActiveView(window.location.hash.slice(1), false));
         openSecretsButton.addEventListener("click", () => setActiveView("secrets"));
 
+        copyWebAgentSecretButton.addEventListener("click", async () => {
+          setButtonBusy(copyWebAgentSecretButton, true, "Copying");
+          webAgentSecretStatus.textContent = "";
+          try {
+            const result = await postAction("/__auvrynt/dashboard/web-agent-secret", {});
+            if (typeof result.secret !== "string" || result.secret.length < 16) throw new Error("The web-agent secret is unavailable.");
+            const copied = await copyText(result.secret, copyWebAgentSecretButton, "Web-agent secret copied.");
+            if (copied) webAgentSecretStatus.textContent = "Copied. Keep this secret private.";
+          } catch (error) {
+            webAgentSecretStatus.textContent = error instanceof Error ? error.message : String(error);
+            showToast(error instanceof Error ? error.message : String(error), "error");
+          } finally {
+            setButtonBusy(copyWebAgentSecretButton, false, "");
+          }
+        });
+
         confirmCancel.addEventListener("click", () => finishConfirmation(false));
         confirmAccept.addEventListener("click", () => finishConfirmation(true));
         confirmDialog.addEventListener("cancel", (event) => { event.preventDefault(); finishConfirmation(false); });
@@ -885,14 +957,11 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
             tabs.push({ key: "godot", label: "Godot", toolCount: godotCount });
           }
           const serena = integrationByKey("serena");
-          const context7 = integrationByKey("context7");
-          const obsidian = integrationByKey("obsidian");
-          const memoryCount = (serena?.toolCount || 0) + (context7?.toolCount || 0) + (obsidian?.toolCount || 0);
-          if (memoryCount > 0) {
-            tabs.push({ key: "memory", label: "Memory", toolCount: memoryCount });
+          if ((serena?.toolCount || 0) > 0) {
+            tabs.push({ key: "serena", label: "Serena", toolCount: serena.toolCount });
           }
           for (const item of state.integrations) {
-            if (item.key === "godotGdscript" || item.key === "godotCsharp" || item.key === "serena" || item.key === "context7" || item.key === "obsidian") continue;
+            if (item.key === "godotGdscript" || item.key === "godotCsharp" || item.key === "serena") continue;
             if (item.toolCount > 0) tabs.push({ key: item.key, label: item.label, toolCount: item.toolCount });
           }
           return tabs;
@@ -904,13 +973,6 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
               { key: "godotGdscript", label: "GDScript", toolCount: integrationByKey("godotGdscript")?.toolCount || 0 },
               { key: "godotCsharp", label: "C#", toolCount: integrationByKey("godotCsharp")?.toolCount || 0 },
             ].filter((item) => item.toolCount > 0);
-          }
-          if (primary === "memory") {
-            return [
-              { key: "serena", label: "Serena", toolCount: integrationByKey("serena")?.toolCount || 0 },
-              { key: "obsidian", label: "Obsidian", toolCount: integrationByKey("obsidian")?.toolCount || 0 },
-              { key: "context7", label: "Context7", toolCount: integrationByKey("context7")?.toolCount || 0 },
-            ];
           }
           return [];
         }
@@ -927,8 +989,8 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
             toolsPrimary = primaryTabs.some((t) => t.key === "godot") ? "godot" : primaryTabs[0].key;
             toolsSub = preferredIntegration;
           } else if (preferredIntegration === "serena") {
-            toolsPrimary = primaryTabs.some((t) => t.key === "memory") ? "memory" : primaryTabs[0].key;
-            toolsSub = "serena";
+            toolsPrimary = primaryTabs.some((t) => t.key === "serena") ? "serena" : primaryTabs[0].key;
+            toolsSub = null;
           } else if (preferredIntegration && primaryTabs.some((t) => t.key === preferredIntegration)) {
             toolsPrimary = preferredIntegration;
             toolsSub = null;
@@ -938,8 +1000,8 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
               toolsPrimary = "godot";
               toolsSub = enabled.key;
             } else if (enabled?.key === "serena") {
-              toolsPrimary = "memory";
-              toolsSub = "serena";
+              toolsPrimary = "serena";
+              toolsSub = null;
             } else {
               toolsPrimary = enabled?.key || primaryTabs[0].key;
               toolsSub = null;
@@ -1150,7 +1212,6 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
         function applyNgrokResult(result) {
           state.ngrok = result.ngrok;
           renderNgrok();
-          renderContext7();
           showToast(result.message || "ngrok credentials updated.");
           if (result.restarting) {
             beginLifecycle(
@@ -1163,52 +1224,6 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
           }
           return false;
         }
-
-        function applyContext7Result(result) {
-          state.context7 = result.context7;
-          renderContext7();
-          showToast(result.message || "Context7 credentials updated.");
-        }
-
-        context7KeyForm.addEventListener("submit", async (event) => {
-          event.preventDefault();
-          const apiKey = context7KeyInput.value.trim();
-          if (apiKey.length < 8 || apiKey.length > 512 || /\s/.test(apiKey)) {
-            showToast("Enter a valid Context7 API key without spaces.", "error");
-            context7KeyInput.focus();
-            return;
-          }
-          setButtonBusy(saveContext7KeyButton, true, "Saving");
-          context7KeyInput.disabled = true;
-          try {
-            const result = await postAction("/__auvrynt/dashboard/context7-key", { action: "set", apiKey });
-            context7KeyInput.value = "";
-            applyContext7Result(result);
-          } catch (error) {
-            showToast(error instanceof Error ? error.message : String(error), "error");
-          } finally {
-            context7KeyInput.value = "";
-            if (!lifecycleMode) {
-              context7KeyInput.disabled = Boolean(state.context7?.environmentOverride);
-              setButtonBusy(saveContext7KeyButton, false, "");
-            }
-          }
-        });
-
-        context7KeyStatus.addEventListener("click", async (event) => {
-          const button = event.target.closest("#clear-context7-key");
-          if (!button || button.disabled) return;
-          if (!await confirmAction("Remove Context7 API key?", "Auvrynt will delete the saved Context7 API key from the local auth file.", "Remove")) return;
-          setButtonBusy(button, true, "Removing");
-          try {
-            const result = await postAction("/__auvrynt/dashboard/context7-key", { action: "clear" });
-            applyContext7Result(result);
-          } catch (error) {
-            showToast(error instanceof Error ? error.message : String(error), "error");
-          } finally {
-            if (!lifecycleMode) setButtonBusy(button, false, "");
-          }
-        });
 
         ngrokTokenForm.addEventListener("submit", async (event) => {
           event.preventDefault();
@@ -1292,12 +1307,50 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
             const result = await postAction("/__auvrynt/dashboard/workspace", { path: selected.path });
             state.allowedRoots = result.allowedRoots || [selected.path];
             renderConnection();
+            renderDirectories();
             showToast(result.message || "Workspace changed.");
           } catch (error) {
             showToast(error instanceof Error ? error.message : String(error), "error");
           } finally {
             editWorkspaceButton.disabled = Boolean(lifecycleMode);
             editWorkspaceButton.setAttribute("aria-busy", "false");
+          }
+        });
+
+        addDirectoryButton.addEventListener("click", async () => {
+          setButtonBusy(addDirectoryButton, true, "Adding");
+          try {
+            const selected = await postAction("/__auvrynt/dashboard/select-directory", {});
+            if (selected.canceled || !selected.path) return;
+            const result = await postAction("/__auvrynt/dashboard/directories", { action: "add", path: selected.path });
+            state.allowedRoots = result.allowedRoots || [...(state.allowedRoots || []), selected.path];
+            renderConnection();
+            renderDirectories();
+            showToast(result.message || "Agent directory added.");
+          } catch (error) {
+            showToast(error instanceof Error ? error.message : String(error), "error");
+          } finally {
+            if (!lifecycleMode) setButtonBusy(addDirectoryButton, false, "");
+          }
+        });
+
+        directories.addEventListener("click", async (event) => {
+          const button = event.target.closest("[data-directory-action='remove']");
+          if (!button || button.disabled) return;
+          const index = Number(button.dataset.directoryIndex);
+          const root = state.allowedRoots?.[index];
+          if (!Number.isInteger(index) || !root) return;
+          if (!await confirmAction("Remove agent directory?", "Web agents will no longer access " + root + ".", "Remove")) return;
+          setButtonBusy(button, true, "Removing");
+          try {
+            const result = await postAction("/__auvrynt/dashboard/directories", { action: "remove", index });
+            state.allowedRoots = result.allowedRoots || state.allowedRoots.filter((_root, rootIndex) => rootIndex !== index);
+            renderConnection();
+            renderDirectories();
+            showToast(result.message || "Agent directory removed.");
+          } catch (error) {
+            showToast(error instanceof Error ? error.message : String(error), "error");
+            setButtonBusy(button, false, "");
           }
         });
 
@@ -1360,14 +1413,49 @@ export function dashboardHtml(view: DashboardView, nonce: string): string {
           }
         });
 
+        toolDisplayForm.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const widgets = toolDisplaySelect.value;
+          if (widgets === state.widgets) {
+            showToast("Tool Call Display is already " + widgets + ".");
+            return;
+          }
+          saveToolDisplayButton.disabled = true;
+          saveToolDisplayButton.setAttribute("aria-busy", "true");
+          toolDisplaySelect.disabled = true;
+          try {
+            const result = await postAction("/__auvrynt/dashboard/widgets", { widgets });
+            state.widgets = result.widgets;
+            if (result.restarting) {
+              showLifecycleOverlay(
+                "restarting",
+                result.message || "Restarting Auvrynt with the new Tool Call Display mode.",
+                "The custom MCP domain remains the same; reconnecting sessions will receive the new compact tool metadata.",
+              );
+              return;
+            }
+            showToast(result.message || "Tool Call Display changed.");
+          } catch (error) {
+            showToast(error instanceof Error ? error.message : String(error), "error");
+          } finally {
+            if (!document.body.classList.contains("lifecycle-active")) {
+              saveToolDisplayButton.disabled = false;
+              saveToolDisplayButton.setAttribute("aria-busy", "false");
+              toolDisplaySelect.disabled = false;
+            }
+          }
+        });
+
         async function copyText(text, button, successMessage) {
           try {
             await navigator.clipboard.writeText(text);
             button.textContent = "✓";
             button.classList.add("copied");
             showToast(successMessage);
+            return true;
           } catch (error) {
             showToast("Failed to copy: " + error.message, "error");
+            return false;
           }
         }
 
@@ -1463,7 +1551,7 @@ function agentCaption(view: DashboardView): string {
   if (view.agentState === "working") return `${view.activeToolCalls} tool call${view.activeToolCalls === 1 ? " is" : "s are"} executing now.`;
   if (view.agentState === "connected") return `${view.sessions} authenticated MCP session${view.sessions === 1 ? " is" : "s are"} currently open.`;
   if (view.agentState === "stopping") return "The dashboard will stop refreshing when shutdown completes.";
-  return "Connect ChatGPT, Claude, or another MCP-compatible AI client.";
+  return "Connect ChatGPT, Claude, Gemini, or another MCP-compatible AI client.";
 }
 
 function lastSeenLabel(value: string | undefined): string {

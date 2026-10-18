@@ -24,6 +24,7 @@ import {
 } from "./runtime-support.js";
 import { checkSqliteNative } from "./commands/status-commands.js";
 import { registerDashboardActions } from "./dashboard-actions.js";
+import { registerJobsDashboardActions } from "./jobs-dashboard-actions.js";
 import { applyDetectedSerenaDefault } from "./serena-detected-default.js";
 import { startTunnelHealthMonitor } from "./tunnel-health-monitor.js";
 
@@ -87,7 +88,14 @@ export async function serveForegroundServer(): Promise<void> {
   registerDashboardActions({
     runningServer,
     config,
+    dashboardControlToken: runningServer.dashboardControlToken,
     requestShutdown: () => { void requestShutdown?.(); },
+  });
+  registerJobsDashboardActions({
+    runningServer,
+    config,
+    dashboardControlToken: runningServer.dashboardControlToken,
+    facebookOAuth: runningServer.facebookOAuth,
   });
 
   if (controlToken) {

@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 export interface RequestContext {
   sessionId: string;
   ownerClientId: string;
+  logicalSessionId?: string;
   roomId?: string;
   workspaceId?: string;
   authScopes: readonly string[];

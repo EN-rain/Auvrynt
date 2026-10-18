@@ -52,10 +52,12 @@ try {
       blender: batch % 2 === 1,
       aseprite: batch % 5 === 0,
       serena: false,
+      solOrchestrator: false,
       playwright: batch % 4 === 0,
-      context7: false,
-      obsidian: false,
       roblox: false,
+      desktop: false,
+      krita: false,
+      openPencil: false,
     });
     assert.equal(profileUpdate.updated, true);
     assert.equal(profileUpdate.closedSessions, 0);

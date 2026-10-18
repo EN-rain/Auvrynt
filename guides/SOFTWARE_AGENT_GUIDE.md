@@ -2,10 +2,11 @@
 
 ## Scope
 
-This guide applies to general software development projects, including:
+This guide applies primarily to non-Godot C#/.NET software projects, including:
 - C#/.NET desktop applications, APIs, libraries, CLI tools, services, and background workers
 - Non-Godot projects using C#/.NET
-- General backend software tasks
+
+For non-.NET software, keep the generic safety/evidence principles but use that project's native manifest, package manager, compiler, test runner, and configured scripts instead of the .NET-specific required workflow below.
 
 Do not use Godot scene-tree or inspector tools unless a `project.godot` exists and is active.
 Do not use web browser/screenshot tools unless the application exposes a web API/UI.

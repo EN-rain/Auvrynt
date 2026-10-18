@@ -3,13 +3,24 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { expandHomePath } from "../roots.js";
 import type { LoggingConfig, LogFormat, LogLevel } from "../logger.js";
-import type { OAuthConfig } from "../oauth-provider.js";
+import type { OAuthConfig, OAuthStaticClientConfig } from "../oauth-provider.js";
 import { loadAuvryntFiles, type AuvryntUserConfig, type AuvryntExecutablesConfig, type AuvryntIntegrationsConfig } from "../user-config.js";
 import { resolveNgrokAuthtoken } from "./ngrok-auth-pool.js";
 import { normalizeNgrokUrl } from "../tunnels/tunnel-utils.js";
+import {
+  DEFAULT_MCP_SESSIONS,
+  DEFAULT_MCP_SESSIONS_PER_CLIENT,
+  MAX_MCP_SESSIONS,
+} from "./session-limits.js";
+
+export {
+  DEFAULT_MCP_SESSIONS,
+  DEFAULT_MCP_SESSIONS_PER_CLIENT,
+  MAX_MCP_SESSIONS,
+} from "./session-limits.js";
 
 export type ToolNamingMode = "legacy" | "short";
-export type WidgetMode = "off" | "changes" | "full";
+export type WidgetMode = "off" | "compact" | "changes" | "full";
 export type TunnelProviderSetting = "cloudflare" | "ngrok" | "custom";
 const DEFAULT_OAUTH_ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
 const DEFAULT_OAUTH_REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -26,12 +37,15 @@ export const SUPPORTED_SCOPES = [
   "auvrynt:aseprite",
   "auvrynt:serena",
   "auvrynt:roblox",
+  "auvrynt:desktop",
+  "auvrynt:krita",
+  "auvrynt:open-pencil",
 ] as const;
 
 export type AuvryntScope = (typeof SUPPORTED_SCOPES)[number];
 
 const DEFAULT_OAUTH_SCOPES: AuvryntScope[] = SUPPORTED_SCOPES.filter(
-  (scope): scope is AuvryntScope => scope !== "auvrynt:blender-python",
+  (scope): scope is AuvryntScope => scope !== "auvrynt:blender-python" && scope !== "auvrynt:desktop",
 );
 
 export const SCOPE_DESCRIPTIONS: Record<AuvryntScope, string> = {
@@ -46,11 +60,25 @@ export const SCOPE_DESCRIPTIONS: Record<AuvryntScope, string> = {
   "auvrynt:aseprite": "Use workspace-bound Aseprite pixel-art and animation tools",
   "auvrynt:serena": "Use local Serena semantic code tools",
   "auvrynt:roblox": "Use official Roblox Studio MCP tools",
+  "auvrynt:desktop": "Capture and control explicitly targeted Windows displays or application windows",
+  "auvrynt:krita": "Use the no-plugin Krita drawing tools and calibrated Krita window",
+  "auvrynt:open-pencil": "Use the local OpenPencil design editor through its official MCP server",
 };
 
-export interface ObsidianServerConfig {
+export interface JobsServerConfig {
   enabled: boolean;
-  vaultPath?: string;
+  minimumMatchScore: number;
+  riskAutoSkipScore: number;
+  integrations: {
+    facebook: {
+      enabled: boolean;
+      /** Public Facebook app id; credentials are read from the process environment only. */
+      appId?: string;
+      /** Facebook app secret; never serialized into a dashboard response. */
+      appSecret?: string;
+      graphVersion: string;
+    };
+  };
 }
 
 export interface SerenaServerConfig {
@@ -64,7 +92,14 @@ export interface SerenaServerConfig {
   maxInstances: number;
 }
 
-export const MAX_MCP_SESSIONS = 99999;
+export interface ArbiterServerConfig {
+  enabled: boolean;
+  endpoint: string;
+  model: string;
+  timeoutMs: number;
+  apiKey?: string;
+}
+
 export const MIN_SESSION_IDLE_TIMEOUT_MS = 60 * 1000;
 export const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 12 * 60 * 60 * 1000;
 export const MAX_SESSION_IDLE_TIMEOUT_MS = 7 * 24 * 60 * 60 * 1000;
@@ -89,10 +124,12 @@ export interface ServerConfig {
   agentDir: string;
   logging: LoggingConfig;
   serena: SerenaServerConfig;
-  obsidian: ObsidianServerConfig;
+  arbiter: ArbiterServerConfig;
+  jobs: JobsServerConfig;
   executables: AuvryntExecutablesConfig;
   integrations: Required<AuvryntIntegrationsConfig>;
   tunnelProvider: TunnelProviderSetting;
+  cloudflareTokenManaged: boolean;
   cloudflareTunnelToken?: string;
   ngrokAuthtoken?: string;
   ngrokUrl?: string;
@@ -203,14 +240,14 @@ function parseLogFormat(value: string | undefined): LogFormat {
   throw new Error(`Invalid AUVRYNT_LOG_FORMAT: ${value}`);
 }
 
-function parsePathList(value: string | undefined): string[] {
-  return (
-    value
-      ?.split(",")
-      .map((entry) => entry.trim())
-      .filter(Boolean)
-      .map((entry) => resolve(expandHomePath(entry))) ?? []
-  );
+function parsePathList(value: string | string[] | undefined): string[] {
+  const entries = Array.isArray(value)
+    ? value
+    : value?.split(",") ?? [];
+  return entries
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => resolve(expandHomePath(entry)));
 }
 
 function parseStringList(value: string | undefined, fallback: string[]): string[] {
@@ -245,6 +282,12 @@ function parseMcpSessionLimit(
   return parsed;
 }
 
+function parseBoundedInteger(value: string | number | undefined, fallback: number, name: string): number {
+  const parsed = parsePositiveInteger(value, fallback, name);
+  if (parsed > 100) throw new Error(`Invalid ${name}: ${value}. Must be between 0 and 100.`);
+  return parsed;
+}
+
 function parseSessionIdleTimeout(value: string | number | undefined, fallback: number, name: string): number {
   const parsed = parsePositiveInteger(value, fallback, name);
   if (parsed < MIN_SESSION_IDLE_TIMEOUT_MS || parsed > MAX_SESSION_IDLE_TIMEOUT_MS) {
@@ -271,11 +314,12 @@ function parseLoggingConfig(env: NodeJS.ProcessEnv): LoggingConfig {
   };
 }
 
-function parseWidgetMode(value: string | undefined): WidgetMode {
-  if (!value || value === "full") return "full";
-  if (value === "off" || value === "changes") return value;
+function parseWidgetMode(value: string | undefined, fileValue: WidgetMode | undefined): WidgetMode {
+  const effective = value ?? fileValue;
+  if (!effective || effective === "compact") return "compact";
+  if (effective === "off" || effective === "changes" || effective === "full") return effective;
 
-  throw new Error(`Invalid AUVRYNT_WIDGETS: ${value}`);
+  throw new Error(`Invalid AUVRYNT_WIDGETS: ${effective}`);
 }
 
 function parseTunnelProvider(value: string | undefined, fileValue: TunnelProviderSetting | undefined): TunnelProviderSetting {
@@ -315,14 +359,27 @@ export function oauthScopesForIntegrations(integrations: AuvryntIntegrationsConf
   if (integrations.blender) scopes.push("auvrynt:blender");
   if (integrations.aseprite) scopes.push("auvrynt:aseprite");
   if (integrations.serena) scopes.push("auvrynt:serena");
+  if (integrations.solOrchestrator) scopes.push("auvrynt:process");
   if (integrations.roblox) scopes.push("auvrynt:roblox");
+  if (integrations.desktop) scopes.push("auvrynt:desktop");
+  if (integrations.krita) scopes.push("auvrynt:krita");
+  if (integrations.openPencil) scopes.push("auvrynt:open-pencil");
   return Array.from(new Set(scopes));
 }
 
 function parseOAuthConfig(
   env: NodeJS.ProcessEnv,
   ownerToken: string | undefined,
+  blenderPythonEnabled = false,
 ): OAuthConfig {
+  const scopes = parseOAuthScopes(env.AUVRYNT_OAUTH_SCOPES);
+  if (
+    env.AUVRYNT_OAUTH_SCOPES === undefined
+    && blenderPythonEnabled
+    && !scopes.includes("auvrynt:blender-python")
+  ) {
+    scopes.push("auvrynt:blender-python");
+  }
   return {
     ownerToken: parseRequiredSecret(env.AUVRYNT_OAUTH_OWNER_TOKEN ?? ownerToken, "AUVRYNT_OAUTH_OWNER_TOKEN"),
     accessTokenTtlSeconds: parsePositiveInteger(
@@ -337,7 +394,9 @@ function parseOAuthConfig(
     ),
     // OAuth is the durable capability envelope. Local integration profiles are
     // a second, runtime gate and may change without reconnecting the web agent.
-    scopes: parseOAuthScopes(env.AUVRYNT_OAUTH_SCOPES),
+    // Blender Python is an explicit trusted-owner opt-in stored in the private
+    // local config unless AUVRYNT_OAUTH_SCOPES was supplied explicitly.
+    scopes,
     allowedRedirectHosts: parseStringList(env.AUVRYNT_OAUTH_ALLOWED_REDIRECT_HOSTS, [
       "grok.com",
       "console.x.ai",
@@ -349,6 +408,12 @@ function parseOAuthConfig(
       "claude.site",
       "useclaude.ai",
       "anthropic.com",
+      "oauth-redirect.googleusercontent.com",
+      "googleusercontent.com",
+      "gemini.google.com",
+      "google.com",
+      "developers.google.com",
+      "aistudio.google.com",
       "oauth.lovable.app",
       "lovable.app",
       "lovable.dev",
@@ -360,7 +425,33 @@ function parseOAuthConfig(
       "localhost",
       "127.0.0.1",
     ]),
+    staticClients: parseStaticClients(env),
   };
+}
+
+function parseStaticClients(env: Record<string, string | undefined>): OAuthStaticClientConfig[] {
+  const staticClients: OAuthStaticClientConfig[] = [];
+  const clientId = env.AUVRYNT_OAUTH_CLIENT_ID || env.AUVRYNT_OAUTH_STATIC_CLIENT_ID;
+  if (clientId?.trim()) {
+    const clientSecret = env.AUVRYNT_OAUTH_CLIENT_SECRET || env.AUVRYNT_OAUTH_STATIC_CLIENT_SECRET;
+    const redirectUrisRaw = env.AUVRYNT_OAUTH_REDIRECT_URIS || env.AUVRYNT_OAUTH_STATIC_REDIRECT_URIS;
+    const redirectUris = redirectUrisRaw
+      ? redirectUrisRaw.split(",").map((s) => s.trim()).filter(Boolean)
+      : [
+          "https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-109752885578851795204-mcp_auvrynt_dpdns_org",
+          "https://oauth-redirect.googleusercontent.com",
+          "https://gemini.google.com",
+          "http://localhost",
+          "http://127.0.0.1",
+        ];
+    staticClients.push({
+      clientId: clientId.trim(),
+      clientSecret: clientSecret?.trim() || undefined,
+      redirectUris,
+      clientName: "Configured Static Client",
+    });
+  }
+  return staticClients;
 }
 
 function defaultStateDir(): string {
@@ -375,13 +466,41 @@ function defaultAgentDir(): string {
   return join(homedir(), ".codex");
 }
 
-function parseObsidianConfig(env: NodeJS.ProcessEnv, filesConfig: AuvryntUserConfig): ObsidianServerConfig {
-  const file = filesConfig.obsidian ?? {};
-  const vaultPath = (env.AUVRYNT_OBSIDIAN_VAULT ?? file.vaultPath)?.trim();
+function parseJobsConfig(env: NodeJS.ProcessEnv, filesConfig: AuvryntUserConfig): JobsServerConfig {
+  const file = filesConfig.jobs ?? {};
+  const facebook = file.integrations?.facebook ?? {};
+  const facebookAppId = parseOptionalSecret(env.AUVRYNT_JOBS_FACEBOOK_APP_ID, "AUVRYNT_JOBS_FACEBOOK_APP_ID", 256);
+  const facebookAppSecret = parseOptionalSecret(env.AUVRYNT_JOBS_FACEBOOK_APP_SECRET, "AUVRYNT_JOBS_FACEBOOK_APP_SECRET", 4096);
+  const graphVersion = parseFacebookGraphVersion(env.AUVRYNT_JOBS_FACEBOOK_GRAPH_VERSION ?? "v22.0");
   return {
-    enabled: parseOptionalIntegrationBoolean(env.AUVRYNT_OBSIDIAN_ENABLED, "AUVRYNT_OBSIDIAN_ENABLED") ?? file.enabled ?? false,
-    vaultPath: vaultPath ? expandHomePath(vaultPath) : undefined,
+    enabled: env.AUVRYNT_JOBS_ENABLED === undefined ? file.enabled ?? true : parseBoolean(env.AUVRYNT_JOBS_ENABLED, "AUVRYNT_JOBS_ENABLED"),
+    minimumMatchScore: parseBoundedInteger(env.AUVRYNT_JOBS_MINIMUM_MATCH_SCORE ?? file.minimumMatchScore, 60, "AUVRYNT_JOBS_MINIMUM_MATCH_SCORE"),
+    riskAutoSkipScore: parseBoundedInteger(env.AUVRYNT_JOBS_RISK_AUTO_SKIP_SCORE ?? file.riskAutoSkipScore, 80, "AUVRYNT_JOBS_RISK_AUTO_SKIP_SCORE"),
+    integrations: {
+      facebook: {
+        enabled: env.AUVRYNT_JOBS_FACEBOOK_ENABLED === undefined
+          ? facebook.enabled ?? Boolean(facebookAppId && facebookAppSecret)
+          : parseBoolean(env.AUVRYNT_JOBS_FACEBOOK_ENABLED, "AUVRYNT_JOBS_FACEBOOK_ENABLED"),
+        appId: facebookAppId,
+        appSecret: facebookAppSecret,
+        graphVersion,
+      },
+    },
   };
+}
+
+function parseOptionalSecret(value: string | undefined, name: string, maximum: number): string | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return undefined;
+  if (trimmed.length > maximum) throw new Error(`${name} must be at most ${maximum} characters.`);
+  return trimmed;
+}
+
+function parseFacebookGraphVersion(value: string): string {
+  const trimmed = value.trim();
+  if (!/^v\d+\.\d+$/.test(trimmed)) throw new Error(`Invalid AUVRYNT_JOBS_FACEBOOK_GRAPH_VERSION: ${value}`);
+  return trimmed;
 }
 
 function parseSerenaConfig(env: NodeJS.ProcessEnv, filesConfig: AuvryntUserConfig): SerenaServerConfig {
@@ -391,7 +510,7 @@ function parseSerenaConfig(env: NodeJS.ProcessEnv, filesConfig: AuvryntUserConfi
     throw new Error(`Invalid AUVRYNT_SERENA_BACKEND: ${backend}`);
   }
   return {
-    enabled: parseBoolean(env.AUVRYNT_SERENA_ENABLED ?? filesSerena.enabled ?? false, "AUVRYNT_SERENA_ENABLED"),
+    enabled: parseBoolean(env.AUVRYNT_SERENA_ENABLED ?? filesSerena.enabled ?? true, "AUVRYNT_SERENA_ENABLED"),
     executable: env.AUVRYNT_SERENA_EXECUTABLE ?? env.AUVRYNT_SERENA_PATH ?? filesConfig.executables?.serena ?? filesSerena.executable ?? "serena",
     backend,
     context: env.AUVRYNT_SERENA_CONTEXT ?? filesSerena.context ?? "desktop-app",
@@ -408,6 +527,48 @@ function parseSerenaConfig(env: NodeJS.ProcessEnv, filesConfig: AuvryntUserConfi
       env.AUVRYNT_SERENA_MAX_INSTANCES ?? filesSerena.maxInstances, 3, "AUVRYNT_SERENA_MAX_INSTANCES",
     ),
   };
+}
+
+function parseArbiterConfig(
+  env: NodeJS.ProcessEnv,
+  filesConfig: AuvryntUserConfig,
+  filesAuth: { arbiterApiKey?: string },
+): ArbiterServerConfig {
+  const file = filesConfig.arbiter ?? {};
+  const endpoint = env.AUVRYNT_ARBITER_URL ?? file.endpoint ?? "http://127.0.0.1:8010";
+  if (endpoint.trim().length === 0 || endpoint.length > 2048) {
+    throw new Error("Invalid AUVRYNT_ARBITER_URL: endpoint must be between 1 and 2048 characters.");
+  }
+  const model = env.AUVRYNT_ARBITER_MODEL ?? file.model ?? "laya-typed-decisions";
+  if (model.trim().length === 0 || model.length > 128) {
+    throw new Error("Invalid AUVRYNT_ARBITER_MODEL: model must be between 1 and 128 characters.");
+  }
+  const apiKey = parseOptionalSecret(
+    env.AUVRYNT_ARBITER_API_KEY ?? filesAuth.arbiterApiKey,
+    "AUVRYNT_ARBITER_API_KEY",
+    4096,
+  );
+  return {
+    enabled: parseBoolean(
+      env.AUVRYNT_ARBITER_ENABLED ?? file.enabled ?? false,
+      "AUVRYNT_ARBITER_ENABLED",
+    ),
+    endpoint: endpoint.trim(),
+    model: model.trim(),
+    timeoutMs: parseArbiterTimeout(
+      env.AUVRYNT_ARBITER_TIMEOUT_MS ?? file.timeoutMs,
+      10_000,
+    ),
+    apiKey,
+  };
+}
+
+function parseArbiterTimeout(value: string | number | undefined, fallback: number): number {
+  const parsed = parsePositiveInteger(value, fallback, "AUVRYNT_ARBITER_TIMEOUT_MS");
+  if (parsed < 250 || parsed > 120_000) {
+    throw new Error(`Invalid AUVRYNT_ARBITER_TIMEOUT_MS: ${value}. Must be between 250 and 120000 milliseconds.`);
+  }
+  return parsed;
 }
 
 function cleanExecutablePath(value: string | undefined): string | undefined {
@@ -444,11 +605,16 @@ function parseIntegrationsConfig(env: NodeJS.ProcessEnv, filesConfig: AuvryntUse
     serena: parseOptionalIntegrationBoolean(
       env.AUVRYNT_SERENA_INTEGRATION_ENABLED ?? env.AUVRYNT_SERENA_ENABLED,
       "AUVRYNT_SERENA_INTEGRATION_ENABLED",
-    ) ?? configIntegrations.serena ?? filesConfig.serena?.enabled ?? false,
+    ) ?? configIntegrations.serena ?? filesConfig.serena?.enabled ?? true,
+    solOrchestrator: parseOptionalIntegrationBoolean(
+      env.AUVRYNT_SOL_ORCHESTRATOR_ENABLED,
+      "AUVRYNT_SOL_ORCHESTRATOR_ENABLED",
+    ) ?? configIntegrations.solOrchestrator ?? false,
     playwright: parseOptionalIntegrationBoolean(env.AUVRYNT_PLAYWRIGHT_ENABLED, "AUVRYNT_PLAYWRIGHT_ENABLED") ?? configIntegrations.playwright ?? false,
-    context7: parseOptionalIntegrationBoolean(env.AUVRYNT_CONTEXT7_ENABLED, "AUVRYNT_CONTEXT7_ENABLED") ?? configIntegrations.context7 ?? false,
-    obsidian: parseOptionalIntegrationBoolean(env.AUVRYNT_OBSIDIAN_ENABLED, "AUVRYNT_OBSIDIAN_ENABLED") ?? configIntegrations.obsidian ?? filesConfig.obsidian?.enabled ?? false,
     roblox: parseOptionalIntegrationBoolean(env.AUVRYNT_ROBLOX_ENABLED, "AUVRYNT_ROBLOX_ENABLED") ?? configIntegrations.roblox ?? false,
+    desktop: parseOptionalIntegrationBoolean(env.AUVRYNT_DESKTOP_ENABLED, "AUVRYNT_DESKTOP_ENABLED") ?? configIntegrations.desktop ?? false,
+    krita: parseOptionalIntegrationBoolean(env.AUVRYNT_KRITA_ENABLED, "AUVRYNT_KRITA_ENABLED") ?? configIntegrations.krita ?? false,
+    openPencil: parseOptionalIntegrationBoolean(env.AUVRYNT_OPEN_PENCIL_ENABLED, "AUVRYNT_OPEN_PENCIL_ENABLED") ?? configIntegrations.openPencil ?? false,
   };
 }
 
@@ -468,23 +634,28 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     new URL(publicBaseUrl).hostname,
     ...(files.config.allowedHosts ?? []),
   ];
+  const maxSessions = parseMcpSessionLimit(
+    env.AUVRYNT_MAX_SESSIONS ?? files.config.maxSessions,
+    DEFAULT_MCP_SESSIONS,
+    "AUVRYNT_MAX_SESSIONS",
+  );
+  const maxSessionsPerClient = Math.min(
+    maxSessions,
+    parseMcpSessionLimit(
+      env.AUVRYNT_MAX_SESSIONS_PER_CLIENT ?? files.config.maxSessionsPerClient,
+      DEFAULT_MCP_SESSIONS_PER_CLIENT,
+      "AUVRYNT_MAX_SESSIONS_PER_CLIENT",
+    ),
+  );
 
   return {
     host,
     port,
-    oauth: parseOAuthConfig(env, files.auth.ownerToken),
+    oauth: parseOAuthConfig(env, files.auth.ownerToken, files.config.blenderPythonEnabled === true),
     allowedRoots: parseAllowedRoots(env.AUVRYNT_ALLOWED_ROOTS ?? files.config.allowedRoots),
     allowedHosts: parseAllowedHosts(env.AUVRYNT_ALLOWED_HOSTS, derivedAllowedHosts),
-    maxSessions: parseMcpSessionLimit(
-      env.AUVRYNT_MAX_SESSIONS ?? files.config.maxSessions,
-      MAX_MCP_SESSIONS,
-      "AUVRYNT_MAX_SESSIONS",
-    ),
-    maxSessionsPerClient: parseMcpSessionLimit(
-      env.AUVRYNT_MAX_SESSIONS_PER_CLIENT ?? files.config.maxSessionsPerClient ?? files.config.maxSessions,
-      MAX_MCP_SESSIONS,
-      "AUVRYNT_MAX_SESSIONS_PER_CLIENT",
-    ),
+    maxSessions,
+    maxSessionsPerClient,
     sessionIdleTimeoutMs: parseSessionIdleTimeout(
       env.AUVRYNT_SESSION_IDLE_MS ?? files.config.sessionIdleTimeoutMs,
       DEFAULT_SESSION_IDLE_TIMEOUT_MS,
@@ -493,18 +664,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     publicBaseUrl,
     minimalTools: parseMinimalTools(env),
     toolNaming: parseToolNaming(env.AUVRYNT_TOOL_NAMING),
-    widgets: parseWidgetMode(env.AUVRYNT_WIDGETS),
+    widgets: parseWidgetMode(env.AUVRYNT_WIDGETS, files.config.widgets),
     stateDir: resolve(expandHomePath(env.AUVRYNT_STATE_DIR ?? files.config.stateDir ?? defaultStateDir())),
     worktreeRoot: resolve(expandHomePath(env.AUVRYNT_WORKTREE_ROOT ?? files.config.worktreeRoot ?? defaultWorktreeRoot())),
     skillsEnabled: env.AUVRYNT_SKILLS === undefined ? true : parseBoolean(env.AUVRYNT_SKILLS),
-    skillPaths: parsePathList(env.AUVRYNT_SKILL_PATHS),
+    skillPaths: parsePathList(env.AUVRYNT_SKILL_PATHS ?? files.config.skillPaths),
     agentDir: resolve(expandHomePath(env.AUVRYNT_AGENT_DIR ?? files.config.agentDir ?? defaultAgentDir())),
     logging: parseLoggingConfig(env),
     serena: parseSerenaConfig(env, files.config),
-    obsidian: parseObsidianConfig(env, files.config),
+    arbiter: parseArbiterConfig(env, files.config, files.auth),
+    jobs: parseJobsConfig(env, files.config),
     executables: parseExecutablesConfig(env, files.config),
     integrations,
     tunnelProvider: parseTunnelProvider(env.AUVRYNT_TUNNEL_PROVIDER, files.config.tunnelProvider),
+    cloudflareTokenManaged: files.config.cloudflareTokenManaged === true,
     cloudflareTunnelToken: env.AUVRYNT_CLOUDFLARE_TUNNEL_TOKEN?.trim() || files.auth.cloudflareTunnelToken,
     ngrokAuthtoken: resolveNgrokAuthtoken(files, env),
     ngrokUrl: normalizeNgrokUrl(env.AUVRYNT_NGROK_URL ?? files.config.ngrokUrl),

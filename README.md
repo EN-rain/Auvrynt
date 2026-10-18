@@ -29,7 +29,7 @@
 
 ## What is Auvrynt?
 
-Auvrynt is a **Model Context Protocol (MCP) server** you run on your own machine. It creates a secure, tunneled connection between AI clients like ChatGPT, Claude, or Grok and your local development environment — your actual files, terminals, build tools, and project folders.
+Auvrynt is a **Model Context Protocol (MCP) server** you run on your own machine. It creates a secure, tunneled connection between AI clients like ChatGPT, Claude, Gemini, or Grok and your local development environment — your actual files, terminals, build tools, and project folders.
 
 No cloud upload. No third-party storage. Your code stays on your machine.
 
@@ -85,7 +85,7 @@ During `auvrynt init`, you will be asked for:
 ## Start the Server
 
 ```bash
-# Starts one managed background instance, scoped to the current directory
+# Starts one managed background instance using the saved profile and workspace
 auvrynt start
 
 # Check or stop the background instance
@@ -107,21 +107,27 @@ When using foreground `auvrynt serve`, the terminal shows request activity. Back
 
 `auvrynt start` starts one managed tunnel and one Auvrynt server in the background. Cloudflare is the default; run `auvrynt tunnel` to select ngrok or configure a custom Cloudflare Named Tunnel. On Windows, a custom domain uses the installed `cloudflared` service: `auvrynt start` starts it and `auvrynt stop` stops it. `auvrynt restart` and `auvrynt restart hard` leave that service untouched. It does not keep the terminal occupied. The tunnel stays alive while profiles are added or replaced, so its URL remains the same until `auvrynt stop` or the managed tunnel process exits. A second start asks before changing the existing instance; use `--replace` when running non-interactively.
 
+**Connect using a Cloudflare Tunnel ID + API token:** run `auvrynt tunnel` and select option **4**. Enter your Cloudflare **account ID**, **tunnel UUID**, **API token**, and public **HTTPS base URL** (without `/mcp`). Auvrynt uses the official Cloudflare API to retrieve the connector token for an existing remotely-managed tunnel. It saves only that connector token in private `~/.auvrynt/auth.json`, not the API token. The API token must have Cloudflare Tunnel Write or Cloudflare One Connector Write permission. The named tunnel's public hostname must already route to `http://127.0.0.1:49321` (or your configured local port). On Windows this opt-in mode manages its own `cloudflared` process instead of the existing Windows service; other custom-domain setups keep using the service as before. A new tunnel connection does not override the MCP client's own authentication or platform access checks.
+
 ### Start only what you need
 
-Profiles are session-only: an explicit profile argument enables only those integrations for the current background instance. An unqualified `auvrynt start` starts with every integration disabled, regardless of saved choices.
+Integration profiles and the last workspace directory are persisted in Auvrynt's private config. An unqualified `auvrynt start` reuses the most recently saved profile and workspace after a restart or PC reboot. Explicit profile arguments, `auvrynt add`, `auvrynt enable`/`disable`, `auvrynt change`, and the dashboard controls are the supported ways to change that saved state. Use `--no-integrations` when you intentionally want to save an empty profile.
 
 ```bash
 # One integration
-auvrynt start model      # Blender MCP port detection
+auvrynt start blender      # Blender MCP port detection
 auvrynt start pixel      # Aseprite native CLI/Lua tools
 auvrynt start web        # Playwright/browser tools + Agent Reach helpers
 auvrynt start godotcs    # Godot C#
 auvrynt start godotgd    # Godot GDScript
 auvrynt start se         # Serena
+auvrynt start krita      # no-plugin Krita drawing tools; keep Krita visible
+auvrynt start desktop    # opt-in Windows Desktop Use: observe, click, type, scroll, and verify
+auvrynt start openpencil # detect OpenPencil desktop and configure its official MCP adapter
 
 # Multiple integrations
-auvrynt start model,godotcs
+auvrynt start blender,godotcs
+auvrynt start desktop,krita
 
 # Add an integration live; neither the server nor tunnel restarts
 auvrynt add web
@@ -187,8 +193,8 @@ Authorization is required again after `auvrynt token reset` or any operation tha
 | Command | Description |
 |---|---|
 | `auvrynt init` | Run first-time setup or update your config |
-| `auvrynt start [profiles]` | Start one managed background instance scoped to the current directory |
-| `auvrynt start model,web` | Start selected profiles: `model`, `web`, `godotcs`, `godotgd`, `se` |
+| `auvrynt start [profiles]` | Start with the saved profile/workspace, or explicitly select a new profile from the current directory |
+| `auvrynt start blender,web` | Start selected profiles: `model`, `web`, `godotcs`, `godotgd`, `se`, `desktop`, `krita`, `openpencil` |
 | `auvrynt start ... --replace` | Live-replace profiles, or switch the managed workspace without changing the tunnel |
 | `auvrynt add <profiles>` | Add profiles live without restarting the server or tunnel |
 | `auvrynt change` | Switch the running workspace to the current directory while preserving profiles and tunnel URL |
@@ -225,7 +231,20 @@ Once connected and a workspace is opened, your AI assistant has access to **over
 | **Godot** | Run projects, inspect scenes, C# build, GDScript diagnostics |
 | **Blender** | Scene audit, checkpoints, renders, export GLB |
 | **Aseprite** | Exact pixel drawing, layers, frames, tags, palettes, sheets, conversion |
+| **OpenPencil** | Detect desktop app and connect its official MCP design tools through Auvrynt |
 | **Git** | Worktree management, status, diff, branch ops |
+
+---
+
+## OpenPencil (optional)
+
+Enable **OpenPencil Design** in the dashboard Connectivity tab or run `auvrynt add openpencil` (`auvrynt start openpencil` for a new profile). It is disabled by default. Auvrynt detects `OpenPencil.exe` / `open-pencil.exe` in the usual Windows application locations or PATH, or a running desktop process. For unusual install paths, set `executables.openPencil` in `~/.auvrynt/config.json` to the **full desktop .exe path**, not the similarly named CLI.
+
+Only if the integration is enabled **and** the desktop app is detected, Auvrynt installs the official `@open-pencil/mcp` package into its private `~/.auvrynt/integrations/open-pencil` directory. On Windows it also registers an Auvrynt-owned `openpencil-mcp-http.cmd` launcher in `%APPDATA%\\npm`, where the OpenPencil desktop app searches for its HTTP/WebSocket server. It never overwrites an existing launcher it does not own. It does not install the package globally, replace another MCP client configuration, or silently launch the editor. If the editor is installed while Auvrynt is running, the first OpenPencil MCP tool request can also perform setup. OpenPencil's existing editor renderer must register with its native HTTP server; an adapter tool list alone does not prove that this happened. Auvrynt checks both the native connection and a real open-document inventory. If the renderer previously failed to start MCP, the official desktop build exposes no external restart endpoint, and Auvrynt reports a blocked integration rather than pretending it is connected or unsafely discarding the document. Complete zero-interaction recovery for an already-open renderer requires an official runtime-reconnect interface.
+
+Open the OpenPencil desktop app and a document, then enable the integration and call `openpencil_status`, `openpencil_list_tools` (with `workspaceId`, optional `query`/`offset`/`limit` for the paged schema inventory), and `openpencil_call` (with `workspaceId`, an exact remote `tool` name, and its `arguments`). Auvrynt connects through OpenPencil's official stdio MCP server. The desktop editor must remain running; merely finding its executable is not an active connection. Each opened Auvrynt workspace gets a separate MCP session, with `OPENPENCIL_MCP_ROOT` scoped to that workspace's root. Remote design mutations require Auvrynt write and process authorization.
+
+OpenPencil official MCP documentation: https://openpencil.dev/programmable/mcp-server .
 
 ---
 
@@ -240,6 +259,7 @@ Auvrynt automatically selects the right workflow guide based on your project typ
 | `project.godot` (any language) | Godot Agent Guide |
 | `.blend` files | Blender Agent Guide |
 | `.aseprite` / `.ase` files | Aseprite Agent Guide |
+| Krita / drawing request | `skills/krita-agent/SKILL.md` + `skills/drawing-agent-core/SKILL.md` |
 
 See [`PROJECT_ROUTER.md`](guides/PROJECT_ROUTER.md) for full routing rules.
 

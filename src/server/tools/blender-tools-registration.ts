@@ -14,14 +14,12 @@ import { sceneCatalogTools } from "../../integrations/blender/blender-catalog-sc
 import { selectCatalogTools } from "../../integrations/blender/blender-catalog-select.js";
 import { meshCatalogTools } from "../../integrations/blender/blender-catalog-mesh.js";
 import { objectCatalogTools } from "../../integrations/blender/blender-catalog-object.js";
-import { stubCatalogTools } from "../../integrations/blender/blender-catalog-stubs.js";
 import {
   blenderPing,
   blenderGetSceneInfo,
   blenderGetSceneAudit,
   blenderGetSelection,
   blenderGetActiveModeAndStatus,
-  blenderGetConsoleErrors,
   blenderInspectObject,
   blenderCreateCube,
   blenderSelectObject,
@@ -158,13 +156,6 @@ export function registerBlenderTools(
     },
     ...toolWidgetDescriptorMeta(config, "read"), annotations: READ_ONLY_ANNOTATIONS,
   }, async (input) => blenderGetSceneAudit(workspaces, input));
-
-  registerAppTool(server, "blender_get_console_errors", {
-    title: "Get Blender console errors",
-    description: "Retrieve recent error and warning messages from the Blender console output.",
-    inputSchema: { workspaceId: WORKSPACE_ID_SCHEMA },
-    ...toolWidgetDescriptorMeta(config, "read"), annotations: READ_ONLY_ANNOTATIONS,
-  }, async ({ workspaceId }) => blenderGetConsoleErrors(workspaces, { workspaceId }));
 
   registerAppTool(server, "blender_get_selection", {
     title: "Get Selected Objects",
@@ -910,7 +901,6 @@ export function registerBlenderTools(
     ...selectCatalogTools,
     ...meshCatalogTools,
     ...objectCatalogTools,
-    ...stubCatalogTools,
   ];
   registerCatalogTools(
     server,

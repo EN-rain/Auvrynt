@@ -7,6 +7,9 @@ assert.equal(identifyProvider("ChatGPT Desktop", "mcp-client/1.0"), "ChatGPT");
 assert.equal(identifyProvider("Grok", "xai-mcp-client/1.0"), "Grok");
 assert.equal(identifyProvider(undefined, "xai/1.0"), "Grok / xAI");
 assert.equal(identifyProvider(undefined, "Kimi/1.2"), "Kimi");
+assert.equal(identifyProvider("Gemini", "google-mcp/1.0"), "Gemini");
+assert.equal(identifyProvider(undefined, "Google-HTTP-Java-Client/1.44.1"), "Gemini");
+assert.equal(identifyProvider(undefined, "https://oauth-redirect.googleusercontent.com"), "Gemini");
 assert.equal(identifyProvider("custom-agent", undefined), "custom-agent");
 
 const stateDir = mkdtempSync(`${tmpdir()}\\auvrynt-connections-test-`);

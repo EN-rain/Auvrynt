@@ -16,12 +16,20 @@ import type { LoggingConfig } from "../logger.js";
 import { logEvent } from "../logger.js";
 import { AUVRYNT_THEME_CSS } from "../ui/brand-theme.js";
 
+export interface OAuthStaticClientConfig {
+  clientId: string;
+  clientSecret?: string;
+  redirectUris: string[];
+  clientName?: string;
+}
+
 export interface OAuthConfig {
   ownerToken: string;
   accessTokenTtlSeconds: number;
   refreshTokenTtlSeconds: number;
   scopes: string[];
   allowedRedirectHosts: string[];
+  staticClients?: OAuthStaticClientConfig[];
   logging?: LoggingConfig;
 }
 
@@ -296,6 +304,7 @@ function sendAuthorizationForm(
 
 export class InMemoryOAuthClientsStore implements OAuthRegisteredClientsStore {
   private readonly clients = new Map<string, OAuthClientInformationFull>();
+  private readonly staticClients = new Map<string, OAuthClientInformationFull>();
 
   constructor(
     private readonly allowedRedirectHosts: string[],
@@ -303,14 +312,21 @@ export class InMemoryOAuthClientsStore implements OAuthRegisteredClientsStore {
     private readonly onChange?: () => void,
     private readonly isClientInUse: (clientId: string) => boolean = () => false,
     private readonly onEvictClient?: (clientId: string) => void,
+    staticClients: OAuthClientInformationFull[] = [],
   ) {
     for (const client of initialClients) {
       if (client.client_id) this.clients.set(client.client_id, client);
     }
+    for (const client of staticClients) {
+      if (client.client_id) {
+        this.staticClients.set(client.client_id, client);
+        this.clients.set(client.client_id, client);
+      }
+    }
   }
 
   getClient(clientId: string): OAuthClientInformationFull | undefined {
-    return this.clients.get(clientId);
+    return this.clients.get(clientId) ?? this.staticClients.get(clientId);
   }
 
   registerClient(
@@ -347,9 +363,11 @@ export class InMemoryOAuthClientsStore implements OAuthRegisteredClientsStore {
   }
 
   private evictOldestInactiveClient(): boolean {
-    const candidates = [...this.clients.values()].sort(
-      (left, right) => (left.client_id_issued_at ?? 0) - (right.client_id_issued_at ?? 0),
-    );
+    const candidates = [...this.clients.values()]
+      .filter((registered) => !this.staticClients.has(registered.client_id))
+      .sort(
+        (left, right) => (left.client_id_issued_at ?? 0) - (right.client_id_issued_at ?? 0),
+      );
     const inactive = candidates.find((registered) => !this.isClientInUse(registered.client_id));
     if (inactive) {
       this.onEvictClient?.(inactive.client_id);
@@ -378,12 +396,23 @@ export class SingleUserOAuthProvider implements OAuthServerProvider {
     this.resourceServerUrl = resourceUrlFromServerUrl(resourceServerUrl);
     this.stateFile = stateFile;
     const persisted = this.loadState();
+    const staticClients: OAuthClientInformationFull[] = (config.staticClients ?? []).map((sc) => ({
+      client_id: sc.clientId,
+      client_secret: sc.clientSecret,
+      client_name: sc.clientName ?? "Configured Static Client",
+      redirect_uris: sc.redirectUris,
+      token_endpoint_auth_method: sc.clientSecret ? "client_secret_post" : "none",
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      client_id_issued_at: Math.floor(Date.now() / 1000),
+    }));
     this.clientsStore = new InMemoryOAuthClientsStore(
       config.allowedRedirectHosts,
       persisted?.clients,
       () => this.persistState(),
       (clientId) => this.clientHasActiveGrant(clientId),
       (clientId) => this.revokeClientGrants(clientId),
+      staticClients,
     );
     for (const [code, record] of persisted?.codes ?? []) {
       this.codes.set(code, {

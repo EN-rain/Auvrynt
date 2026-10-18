@@ -3,21 +3,20 @@ import {
   summarizeNgrokAuthtokens,
   type NgrokAuthtokenPoolSummary,
 } from "../infrastructure/ngrok-auth-pool.js";
-import {
-  summarizeContext7Auth,
-  type Context7AuthSummary,
-} from "../infrastructure/context7-auth.js";
 import { readConnectedClients } from "../connection-registry.js";
 import { discoverLocalIntegrations, processDetected } from "../integration-discovery.js";
 import type { RecentLogEntry } from "../infrastructure/logger.js";
 import { recentLogEntries } from "../infrastructure/logger.js";
 import { getPlaywrightRuntimeStatus } from "../playwright-runtime.js";
 import { getAsepriteBridgeRuntimeStatus } from "../integrations/aseprite/aseprite-live-tools.js";
+import { probeOpenPencilBridge } from "../integrations/open-pencil/open-pencil-health.js";
+import { verifyOpenPencilDocuments } from "../integrations/open-pencil/open-pencil-client.js";
 import { integrationToolCounts, registeredToolNamesForIntegration } from "./mcp-tool-registrar.js";
 import { toolIntegrationEnabled } from "./mcp-policy.js";
 import { groupToolsByName } from "./tool-groups.js";
 import { dashboardHtml } from "./dashboard-page.js";
 import type { WorkspaceChangeAnalytics } from "./workspace-analytics.js";
+import type { McpRequestTimingSnapshot } from "../infrastructure/request-timing.js";
 import { formatPathForPrompt, loadWorkspaceSkills } from "../workspace/skills.js";
 
 export { dashboardHtml };
@@ -36,6 +35,14 @@ export interface DashboardNgrokState extends NgrokAuthtokenPoolSummary {
   notice?: DashboardNgrokNotice;
 }
 
+export interface DashboardArbiterState {
+  enabled: boolean;
+  configured: boolean;
+  endpoint: string;
+  model: string;
+  timeoutMs: number;
+}
+
 export interface DashboardIntegration {
   key: DashboardIntegrationKey;
   label: string;
@@ -44,6 +51,12 @@ export interface DashboardIntegration {
   detail: string;
   toolCount: number;
   toolEnabledCount: number;
+}
+
+export interface DashboardDirectoryRequirement {
+  key: "godot" | "blender" | "aseprite" | "serena" | "playwright";
+  label: string;
+  note: string;
 }
 
 export interface DashboardSkillEntry {
@@ -80,15 +93,18 @@ export interface DashboardView {
   publicBaseUrl: string;
   tunnelProvider: ServerConfig["tunnelProvider"];
   allowedRoots: string[];
+  directoryRequirements: DashboardDirectoryRequirement[];
   sessions: number;
   maxSessions: number;
   sessionIdleTimeoutMinutes: number;
+  widgets: ServerConfig["widgets"];
+  mcpRequestTimings: McpRequestTimingSnapshot;
   runningProcesses: number;
   workspaceChanges: WorkspaceChangeAnalytics;
   integrations: DashboardIntegration[];
   skills: DashboardSkillsState;
   ngrok: DashboardNgrokState;
-  context7: Context7AuthSummary;
+  arbiter: DashboardArbiterState;
   logs: RecentLogEntry[];
 }
 
@@ -99,6 +115,7 @@ export interface DashboardRuntimeSnapshot {
   lastMcpActivityAt?: number;
   runningProcesses: number;
   workspaceChanges: WorkspaceChangeAnalytics;
+  mcpRequestTimings: McpRequestTimingSnapshot;
 }
 
 const INTEGRATION_LABELS: Record<DashboardIntegrationKey, string> = {
@@ -107,11 +124,37 @@ const INTEGRATION_LABELS: Record<DashboardIntegrationKey, string> = {
   blender: "Blender",
   aseprite: "Aseprite",
   serena: "Serena",
+  solOrchestrator: "Sol Orchestrator",
   playwright: "Playwright",
-  context7: "Context7",
-  obsidian: "Obsidian",
   roblox: "Roblox Studio",
+  desktop: "Desktop Use",
+  krita: "Krita Drawing",
+  openPencil: "OpenPencil Design",
 };
+
+const DIRECTORY_REQUIREMENTS: Partial<Record<DashboardIntegrationKey, DashboardDirectoryRequirement>> = {
+  godotCsharp: { key: "godot", label: "Godot directory", note: "Used by Godot project tools." },
+  godotGdscript: { key: "godot", label: "Godot directory", note: "Used by Godot project tools." },
+  blender: { key: "blender", label: "Blender directory", note: "Used by Blender workspace tools." },
+  aseprite: { key: "aseprite", label: "Aseprite directory", note: "Used by Aseprite file tools." },
+  serena: { key: "serena", label: "Serena directory", note: "Used by Serena as the active project root." },
+  playwright: { key: "playwright", label: "Web project directory", note: "Used by web project tools for local files and artifacts." },
+};
+
+export function directoryRequirementsForIntegrations(
+  integrations: ServerConfig["integrations"],
+): DashboardDirectoryRequirement[] {
+  const seen = new Set<DashboardDirectoryRequirement["key"]>();
+  const requirements: DashboardDirectoryRequirement[] = [];
+  for (const key of Object.keys(DIRECTORY_REQUIREMENTS) as DashboardIntegrationKey[]) {
+    if (!integrations[key]) continue;
+    const requirement = DIRECTORY_REQUIREMENTS[key];
+    if (!requirement || seen.has(requirement.key)) continue;
+    seen.add(requirement.key);
+    requirements.push(requirement);
+  }
+  return requirements;
+}
 
 export async function createDashboardView(
   config: ServerConfig,
@@ -177,13 +220,22 @@ export async function createDashboardView(
     : "Aseprite native CLI is detected and ready on demand; launch Aseprite with the bridge installed for live editor control.";
   const serenaConnected = Boolean(discovered && processDetected(discovered, "serena"));
   const serenaAvailable = Boolean(discovered?.executables.serena || config.serena.executable);
+  const desktopAvailable = process.platform === "win32";
+  const kritaRunning = Boolean(discovered && processDetected(discovered, "krita"));
+  const openPencilRunning = Boolean(discovered && processDetected(discovered, "openPencil"));
+  const openPencilHealth = openPencilRunning && config.integrations.openPencil
+    ? await probeOpenPencilBridge()
+    : undefined;
+  const openPencilDocuments = openPencilHealth?.state === "connected"
+    ? await verifyOpenPencilDocuments(process.cwd())
+    : undefined;
+  const openPencilConnected = openPencilDocuments?.connected === true;
   const agentProvider = runtime.sessions > 0
     ? readConnectedClients(config.stateDir)[0]?.provider
     : undefined;
   const logs = recentLogEntries(250).reverse();
   const ngrokSummary = summarizeNgrokAuthtokens();
   const ngrokNotice = createNgrokNotice(config, ngrokSummary, logs);
-  const context7 = summarizeContext7Auth();
   const agentState: DashboardAgentState = !runtime.ready
     ? "stopping"
     : runtime.activeToolCalls > 0
@@ -206,10 +258,20 @@ export async function createDashboardView(
     publicMcpUrl: `${config.publicBaseUrl.replace(/\/$/, "")}/mcp`,
     publicBaseUrl: config.publicBaseUrl,
     tunnelProvider: config.tunnelProvider,
+    arbiter: {
+      enabled: config.arbiter.enabled,
+      configured: Boolean(config.arbiter.apiKey),
+      endpoint: config.arbiter.endpoint,
+      model: config.arbiter.model,
+      timeoutMs: config.arbiter.timeoutMs,
+    },
     allowedRoots: [...config.allowedRoots],
+    directoryRequirements: directoryRequirementsForIntegrations(config.integrations),
     sessions: runtime.sessions,
     maxSessions: config.maxSessions,
     sessionIdleTimeoutMinutes: Math.round(config.sessionIdleTimeoutMs / 60_000),
+    widgets: config.widgets,
+    mcpRequestTimings: runtime.mcpRequestTimings,
     runningProcesses: runtime.runningProcesses,
     workspaceChanges: runtime.workspaceChanges,
     integrations: [
@@ -254,28 +316,20 @@ export async function createDashboardView(
         "Serena is not detected.",
       ),
       integration(
+        "solOrchestrator",
+        false,
+        true,
+        "Sol Orchestrator Codex App Server is active.",
+        "Codex App Server starts on demand when Sol delegates work.",
+        "Codex App Server is unavailable.",
+      ),
+      integration(
         "playwright",
         false,
         playwright.chromiumInstalled,
         "Playwright browser is active.",
         "Chromium is installed and starts on demand.",
         "Playwright Chromium is unavailable.",
-      ),
-      integration(
-        "context7",
-        false,
-        true,
-        "Context7 API is ready.",
-        "Context7 docs tools use the API key from Secrets.",
-        "Add a Context7 API key in Secrets.",
-      ),
-      integration(
-        "obsidian",
-        false,
-        true,
-        "Obsidian vault is configured.",
-        "Point AUVRYNT_OBSIDIAN_VAULT at your vault folder.",
-        "Configure an Obsidian vault path to enable note tools.",
       ),
       integration(
         "roblox",
@@ -285,6 +339,34 @@ export async function createDashboardView(
         "Official Studio MCP launcher is available for roblox_* tools.",
         "Install Studio, enable MCP in Assistant settings, then start with auvrynt start roblox.",
       ),
+      integration(
+        "desktop",
+        false,
+        desktopAvailable,
+        "Windows desktop capture and input are available.",
+        "Windows desktop capture and input are ready on demand.",
+        "Desktop capture and input currently require Windows.",
+      ),
+      integration(
+        "krita",
+        kritaRunning,
+        kritaRunning,
+        "Krita is running; the no-plugin calibrated desktop path is available.",
+        "Krita is available when its main window is visible.",
+        "Krita is not detected. Open the visible Krita main window before testing.",
+      ),
+      integration(
+        "openPencil",
+        openPencilConnected,
+        Boolean(openPencilRunning || discovered?.executables.openPencil),
+        openPencilDocuments?.detail ?? "OpenPencil editor and document connected.",
+        openPencilRunning
+          ? openPencilHealth && "detail" in openPencilHealth
+            ? openPencilHealth.detail
+            : openPencilDocuments?.detail ?? "OpenPencil is running; the native MCP connection is not established."
+          : "OpenPencil is installed; open a document to use its official MCP server.",
+        "OpenPencil is not detected. Install the desktop app, then enable this integration.",
+      ),
     ],
     skills: buildDashboardSkills(config),
     ngrok: {
@@ -292,7 +374,6 @@ export async function createDashboardView(
       provider: config.tunnelProvider,
       ...(ngrokNotice ? { notice: ngrokNotice } : {}),
     },
-    context7,
     logs,
   };
 }
@@ -367,7 +448,7 @@ export function createDashboardToolsView(
 
 function toolTitle(name: string): string {
   return name
-    .replace(/^blender_|^aseprite_|^godot_|^serena_|^context7_|^obsidian_/, "")
+    .replace(/^blender_|^aseprite_|^godot_|^serena_/, "")
     .split("_")
     .filter(Boolean)
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))

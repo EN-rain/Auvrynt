@@ -9,6 +9,10 @@ import { enqueueIntegration } from "../integration-queue.js";
 import { registerToolCapability } from "../tool-capabilities.js";
 import { limitToolResultPayload } from "../tool-result-budget.js";
 import {
+  recoveryCoordinatorForStateDir,
+  type RecoveryToolAnnotations,
+} from "../process/recovery-core.js";
+import {
   godotToolBelongsToIntegration,
   godotToolFamily,
   hasRequiredScopes,
@@ -41,9 +45,13 @@ export function integrationKeyForTool(name: string): string {
   const godotFamily = godotToolFamily(name);
   if (godotFamily) return godotFamily;
   if (name.startsWith("serena_")) return "serena";
-  if (name.startsWith("context7_")) return "context7";
-  if (name.startsWith("obsidian_")) return "obsidian";
+  if (name.startsWith("codex_")) return "solOrchestrator";
+  if (name.startsWith("agent_reach_")) return "agentReach";
+  if (name.startsWith("desktop_")) return "desktop";
+  if (name.startsWith("krita_")) return "krita";
   if (name.startsWith("roblox_")) return "roblox";
+  if (name.startsWith("openpencil_")) return "openPencil";
+  if (name.startsWith("arbiter_")) return "core";
   if (
     name.startsWith("browser_")
     || ["capture_page_screenshot", "inspect_page", "test_responsive_page"].includes(name)
@@ -132,11 +140,23 @@ export function syncMcpToolAvailability(
   return { enabled, disabled };
 }
 
+function recoveryAnnotationsFromToolConfig(toolConfig: unknown): RecoveryToolAnnotations | undefined {
+  if (!toolConfig || typeof toolConfig !== "object" || !("annotations" in toolConfig)) return undefined;
+  const annotations = (toolConfig as { annotations?: unknown }).annotations;
+  if (!annotations || typeof annotations !== "object") return undefined;
+  const candidate = annotations as RecoveryToolAnnotations;
+  return {
+    readOnlyHint: candidate.readOnlyHint,
+    destructiveHint: candidate.destructiveHint,
+    idempotentHint: candidate.idempotentHint,
+  };
+}
+
 export const registerAppTool = ((server: McpServer, name: string, toolConfig: unknown, handler: Function) => {
-  registerToolCapability(name);
-  const guard = guards.get(server);
   const requiredScopes = requiredScopesForToolName(name);
+  const guard = guards.get(server);
   if (guard && !hasRequiredScopes(guard.config.oauth.scopes, requiredScopes)) return undefined;
+  registerToolCapability(name);
 
   const guardedHandler = async (...args: unknown[]) => {
     const input = args[0];
@@ -166,15 +186,48 @@ export const registerAppTool = ((server: McpServer, name: string, toolConfig: un
       }
     }
 
-    const invokeHandler = async () => limitToolResultPayload(
-      await Reflect.apply(handler, undefined, args),
-    );
+    const invokeHandler = async () => {
+      const recovery = guard && workspaceId && !name.startsWith("recovery_")
+        ? recoveryCoordinatorForStateDir(guard.config.stateDir)
+        : undefined;
+      const tracked = recovery
+        ? await recovery.beginToolCall({
+            workspaceId: workspaceId!,
+            sessionId: requestContext?.sessionId,
+            integration: integrationKeyForTool(name),
+            toolName: name,
+            input,
+            annotations: recoveryAnnotationsFromToolConfig(toolConfig),
+          })
+        : undefined;
+
+      try {
+        const result = limitToolResultPayload(await Reflect.apply(handler, undefined, args));
+        if (tracked && recovery) await recovery.finishToolCall(workspaceId!, tracked.actionId);
+        return result;
+      } catch (error) {
+        if (tracked && recovery) {
+          try {
+            await recovery.finishToolCall(workspaceId!, tracked.actionId, error);
+          } catch (recoveryError) {
+            throw new AggregateError(
+              [error, recoveryError],
+              `Tool ${name} failed and its recovery journal could not be settled.`,
+            );
+          }
+        }
+        throw error;
+      }
+    };
     const invokeByIntegration = () => {
       if (name.startsWith("blender_")) return enqueueIntegration("blender", invokeHandler);
       if (name.startsWith("aseprite_")) return enqueueIntegration("aseprite", invokeHandler);
       if (name.startsWith("godot_")) return enqueueIntegration("godot", invokeHandler);
       if (name.startsWith("serena_")) return enqueueIntegration("serena", invokeHandler);
       if (name.startsWith("roblox_")) return enqueueIntegration("roblox", invokeHandler);
+      if (name.startsWith("openpencil_")) return enqueueIntegration("openPencil", invokeHandler);
+      if (name.startsWith("desktop_")) return enqueueIntegration("desktop", invokeHandler);
+      if (name.startsWith("krita_")) return enqueueIntegration("krita", invokeHandler);
       return invokeHandler();
     };
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { loadConfig } from "./config.js";
 
 const emptyConfigDir = mkdtempSync(join(tmpdir(), "auvrynt-empty-config-test-"));
@@ -11,7 +11,8 @@ const baseEnv = {
   AUVRYNT_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
 };
 
-assert.equal(loadConfig(baseEnv).widgets, "full");
+assert.equal(loadConfig(baseEnv).widgets, "compact");
+assert.equal(loadConfig({ ...baseEnv, AUVRYNT_WIDGETS: "compact" }).widgets, "compact");
 assert.equal(loadConfig({ ...baseEnv, AUVRYNT_WIDGETS: "changes" }).widgets, "changes");
 assert.equal(loadConfig({ ...baseEnv, AUVRYNT_WIDGETS: "full" }).widgets, "full");
 assert.equal(loadConfig({ ...baseEnv, AUVRYNT_WIDGETS: "off" }).widgets, "off");
@@ -23,13 +24,13 @@ assert.equal(loadConfig({ ...baseEnv, AUVRYNT_TOOL_MODE: "minimal" }).minimalToo
 assert.equal(loadConfig({ ...baseEnv, AUVRYNT_TOOL_MODE: "full" }).minimalTools, false);
 assert.equal(loadConfig({ ...baseEnv, AUVRYNT_MINIMAL_TOOLS: "0" }).minimalTools, false);
 assert.equal(loadConfig({ ...baseEnv, AUVRYNT_MINIMAL_TOOLS: "1" }).minimalTools, true);
-assert.equal(loadConfig(baseEnv).maxSessions, 99999);
-assert.equal(loadConfig(baseEnv).maxSessionsPerClient, 99999);
+assert.equal(loadConfig(baseEnv).maxSessions, 32);
+assert.equal(loadConfig(baseEnv).maxSessionsPerClient, 8);
 assert.equal(loadConfig({ ...baseEnv, AUVRYNT_MAX_SESSIONS: "10" }).maxSessions, 10);
 assert.equal(loadConfig({ ...baseEnv, AUVRYNT_MAX_SESSIONS_PER_CLIENT: "5" }).maxSessionsPerClient, 5);
 assert.throws(
-  () => loadConfig({ ...baseEnv, AUVRYNT_MAX_SESSIONS: "100000" }),
-  /Maximum is 99999/,
+  () => loadConfig({ ...baseEnv, AUVRYNT_MAX_SESSIONS: "257" }),
+  /Maximum is 256/,
 );
 assert.throws(
   () => loadConfig({ ...baseEnv, AUVRYNT_MAX_SESSIONS_PER_CLIENT: "0" }),
@@ -38,10 +39,30 @@ assert.throws(
 assert.equal(loadConfig(baseEnv).skillsEnabled, true);
 assert.equal(loadConfig({ ...baseEnv, AUVRYNT_SKILLS: "0" }).skillsEnabled, false);
 assert.equal(loadConfig({ ...baseEnv, AUVRYNT_SKILLS: "1" }).skillsEnabled, true);
-assert.equal(loadConfig(baseEnv).serena.enabled, false);
+assert.equal(loadConfig(baseEnv).serena.enabled, true);
+assert.equal(loadConfig(baseEnv).integrations.serena, true);
+assert.equal("obsidian" in loadConfig(baseEnv), false);
+assert.equal("context7" in loadConfig(baseEnv).integrations, false);
 assert.equal(loadConfig(baseEnv).integrations.aseprite, false);
+assert.equal(loadConfig(baseEnv).integrations.solOrchestrator, false);
+assert.equal(loadConfig({ ...baseEnv, AUVRYNT_SOL_ORCHESTRATOR_ENABLED: "1" }).integrations.solOrchestrator, true);
 assert.equal(loadConfig(baseEnv).sessionIdleTimeoutMs, 12 * 60 * 60 * 1000);
 assert.equal(loadConfig({ ...baseEnv, AUVRYNT_CLOUDFLARE_TUNNEL_TOKEN: "t".repeat(16) }).cloudflareTunnelToken, "t".repeat(16));
+const arbiterEnv = {
+  ...baseEnv,
+  AUVRYNT_ARBITER_ENABLED: "1",
+  AUVRYNT_ARBITER_URL: "https://arbiter.example.test",
+  AUVRYNT_ARBITER_MODEL: "laya-typed-decisions",
+  AUVRYNT_ARBITER_TIMEOUT_MS: "7500",
+  AUVRYNT_ARBITER_API_KEY: "arbiter-api-key-that-is-long-enough",
+};
+assert.equal(loadConfig(arbiterEnv).arbiter.enabled, true);
+assert.equal(loadConfig(arbiterEnv).arbiter.endpoint, "https://arbiter.example.test");
+assert.equal(loadConfig(arbiterEnv).arbiter.model, "laya-typed-decisions");
+assert.equal(loadConfig(arbiterEnv).arbiter.timeoutMs, 7500);
+assert.equal(loadConfig(arbiterEnv).arbiter.apiKey, "arbiter-api-key-that-is-long-enough");
+assert.equal(loadConfig(baseEnv).arbiter.enabled, false);
+assert.equal(loadConfig(baseEnv).arbiter.apiKey, undefined);
 assert.equal(loadConfig({ ...baseEnv, AUVRYNT_SESSION_IDLE_MS: String(60 * 60 * 1000) }).sessionIdleTimeoutMs, 60 * 60 * 1000);
 assert.throws(
   () => loadConfig({ ...baseEnv, AUVRYNT_SESSION_IDLE_MS: "59999" }),
@@ -51,7 +72,7 @@ assert.throws(
   () => loadConfig({ ...baseEnv, AUVRYNT_SESSION_IDLE_MS: String(7 * 24 * 60 * 60 * 1000 + 1) }),
   /Invalid AUVRYNT_SESSION_IDLE_MS/,
 );
-assert.equal(loadConfig(baseEnv).integrations.serena, false);
+assert.equal(loadConfig(baseEnv).integrations.serena, true);
 assert.equal(
   loadConfig({ ...baseEnv, AUVRYNT_ASEPRITE_SOURCE_PATH: "C:/src/aseprite" }).executables.asepriteSource,
   "C:/src/aseprite",
@@ -124,7 +145,27 @@ assert.deepEqual(loadConfig(baseEnv).oauth.scopes, [
   "auvrynt:blender",
   "auvrynt:aseprite",
   "auvrynt:serena",
+  "auvrynt:roblox",
+  "auvrynt:krita",
+  "auvrynt:open-pencil",
 ]);
+assert.equal(loadConfig(baseEnv).oauth.scopes.includes("auvrynt:desktop"), false);
+assert.equal(loadConfig(baseEnv).oauth.scopes.includes("auvrynt:blender-python"), false);
+
+const privilegedBlenderConfigDir = mkdtempSync(join(tmpdir(), "auvrynt-blender-python-config-test-"));
+writeFileSync(join(privilegedBlenderConfigDir, "config.json"), JSON.stringify({ blenderPythonEnabled: true }));
+const privilegedBlenderEnv = { ...baseEnv, AUVRYNT_CONFIG_DIR: privilegedBlenderConfigDir };
+assert.equal(
+  loadConfig(privilegedBlenderEnv).oauth.scopes.includes("auvrynt:blender-python"),
+  true,
+  "private config opt-in must add the privileged Blender Python scope",
+);
+assert.deepEqual(
+  loadConfig({ ...privilegedBlenderEnv, AUVRYNT_OAUTH_SCOPES: "auvrynt:read,auvrynt:blender" }).oauth.scopes,
+  ["auvrynt:read", "auvrynt:blender"],
+  "an explicit OAuth scope environment value must remain authoritative",
+);
+
 assert.deepEqual(loadConfig(baseEnv).oauth.allowedRedirectHosts, [
   "grok.com",
   "console.x.ai",
@@ -136,6 +177,12 @@ assert.deepEqual(loadConfig(baseEnv).oauth.allowedRedirectHosts, [
   "claude.site",
   "useclaude.ai",
   "anthropic.com",
+  "oauth-redirect.googleusercontent.com",
+  "googleusercontent.com",
+  "gemini.google.com",
+  "google.com",
+  "developers.google.com",
+  "aistudio.google.com",
   "oauth.lovable.app",
   "lovable.app",
   "lovable.dev",
@@ -149,6 +196,27 @@ assert.deepEqual(loadConfig(baseEnv).oauth.allowedRedirectHosts, [
 ]);
 assert.equal(loadConfig(baseEnv).oauth.accessTokenTtlSeconds, 3600);
 assert.equal(loadConfig(baseEnv).oauth.refreshTokenTtlSeconds, 2592000);
+assert.deepEqual(loadConfig(baseEnv).oauth.staticClients, []);
+
+const staticClientEnv = {
+  ...baseEnv,
+  AUVRYNT_OAUTH_CLIENT_ID: "test-gemini-client",
+  AUVRYNT_OAUTH_CLIENT_SECRET: "test-gemini-secret",
+};
+assert.deepEqual(loadConfig(staticClientEnv).oauth.staticClients, [
+  {
+    clientId: "test-gemini-client",
+    clientSecret: "test-gemini-secret",
+    redirectUris: [
+      "https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-109752885578851795204-mcp_auvrynt_dpdns_org",
+      "https://oauth-redirect.googleusercontent.com",
+      "https://gemini.google.com",
+      "http://localhost",
+      "http://127.0.0.1",
+    ],
+    clientName: "Configured Static Client",
+  },
+]);
 
 assert.throws(
   () => loadConfig({ ...baseEnv, AUVRYNT_OAUTH_SCOPES: "auvrynt:read,admin" }),
@@ -258,6 +326,7 @@ writeFileSync(
     port: 8787,
     allowedRoots: [process.cwd()],
     publicBaseUrl: "https://auvrynt.example.com",
+    skillPaths: ["C:/Users/LENOVO/Desktop/Projectsss/Auvrynt/skills"],
   }),
 );
 writeFileSync(
@@ -271,6 +340,7 @@ const fileConfig = loadConfig({ AUVRYNT_CONFIG_DIR: configDir });
 assert.equal(fileConfig.port, 8787);
 assert.equal(fileConfig.oauth.ownerToken, "persisted-owner-token-long-enough");
 assert.equal(fileConfig.publicBaseUrl, "https://auvrynt.example.com");
+assert.deepEqual(fileConfig.skillPaths, [resolve("C:/Users/LENOVO/Desktop/Projectsss/Auvrynt/skills")]);
 assert.deepEqual(fileConfig.allowedHosts, [
   "localhost",
   "127.0.0.1",

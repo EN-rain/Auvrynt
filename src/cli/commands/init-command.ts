@@ -73,6 +73,7 @@ export async function ensureConfigured(options: { directoryScoped?: boolean } = 
         host: files.config.host ?? "127.0.0.1",
         port: files.config.port ?? 49321,
         allowedRoots: [launchRoot],
+        workspaceRoot: launchRoot,
         publicBaseUrl: files.config.publicBaseUrl ?? `http://127.0.0.1:${files.config.port ?? 49321}`,
       });
     }
@@ -123,7 +124,7 @@ export async function runInitCommand({ force }: { force: boolean }): Promise<voi
     }));
 
     prompts.note([
-      "Auvrynt needs a public base URL so ChatGPT or Claude can reach this MCP server.",
+      "Auvrynt needs a public base URL so ChatGPT, Claude, or Gemini can reach this MCP server.",
       "Create a tunnel or reverse proxy with Cloudflare Tunnel, ngrok, Pinggy, Tailscale Funnel, or your own HTTPS proxy.",
       "Paste the public origin here, without /mcp.",
       "",
@@ -142,6 +143,7 @@ export async function runInitCommand({ force }: { force: boolean }): Promise<voi
       host: files.config.host ?? "127.0.0.1",
       port,
       allowedRoots,
+      workspaceRoot: allowedRoots[0],
       publicBaseUrl,
     };
     const auth = { ownerToken: files.auth.ownerToken ?? generateOwnerToken() };
@@ -155,7 +157,7 @@ export async function runInitCommand({ force }: { force: boolean }): Promise<voi
     ].join("\n"), "Auvrynt configured");
     prompts.note([
       `Owner token: ${auth.ownerToken}`,
-      "Use this when ChatGPT or Claude asks you to approve Auvrynt access.",
+      "Use this when ChatGPT, Claude, or Gemini asks you to approve Auvrynt access.",
       `Stored at: ${authPath}`,
     ].join("\n"), "Owner token");
     prompts.outro("Run `auvrynt start` to start the MCP server.");

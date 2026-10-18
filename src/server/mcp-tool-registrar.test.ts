@@ -8,6 +8,7 @@ import { loadConfig } from "../config.js";
 import { RoomRegistry } from "../room-registry.js";
 import { runWithContext } from "../request-context.js";
 import { WorkspaceRegistry } from "../workspaces.js";
+import { TOOL_CAPABILITIES } from "../tool-capabilities.js";
 import {
   configureMcpToolGuard,
   registerAppTool,
@@ -91,6 +92,17 @@ try {
   delete config.toolToggles["blender_create_cube"];
   assert.deepEqual(syncMcpToolAvailability(server, config), { enabled: 1, disabled: 0 });
   assert.equal((blenderTool as any).enabled, true, "removing the toggle must restore the tool");
+
+  const unavailableDesktopTool = registerAppTool(server, "desktop_capture", {
+    inputSchema: { workspaceId: z.string() },
+    _meta: {},
+  }, async () => ({ content: [{ type: "text", text: "capture" }] }));
+  assert.equal(unavailableDesktopTool, undefined, "a tool outside the configured OAuth envelope must not be registered");
+  assert.equal(
+    TOOL_CAPABILITIES.has("desktop_capture"),
+    false,
+    "a tool that was not registered must not be advertised through the capability inventory",
+  );
 
   assert.equal(groupForTool("blender_add_cube"), "Model");
   assert.equal(groupForTool("blender_set_keyframe"), "Animation");

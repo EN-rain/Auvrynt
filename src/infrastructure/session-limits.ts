@@ -1,0 +1,3 @@
+export const DEFAULT_MCP_SESSIONS = 32;
+export const DEFAULT_MCP_SESSIONS_PER_CLIENT = 8;
+export const MAX_MCP_SESSIONS = 256;

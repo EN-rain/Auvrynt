@@ -104,6 +104,35 @@ try {
   assert.equal(ownerBearer.clientId, "auvrynt-owner-bearer");
   assert.deepEqual(ownerBearer.scopes, ["auvrynt:read", "auvrynt:web"]);
   await assert.rejects(() => restarted.verifyAccessToken("wrong-owner-token"));
+
+  // Gemini compatibility test: dynamic registration and static client with exact user redirect URI
+  const geminiStore = new InMemoryOAuthClientsStore(["googleusercontent.com", "google.com"]);
+  const geminiRegistered = geminiStore.registerClient(
+    client("https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-109752885578851795204-mcp_auvrynt_dpdns_org") as any,
+  );
+  assert.ok(geminiRegistered.client_id);
+  assert.deepEqual(geminiRegistered.redirect_uris, [
+    "https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-109752885578851795204-mcp_auvrynt_dpdns_org",
+  ]);
+
+  const geminiConfig = {
+    ...config,
+    allowedRedirectHosts: ["googleusercontent.com", "google.com", "localhost"],
+    staticClients: [
+      {
+        clientId: "static-gemini-client",
+        clientSecret: "gemini-secret-123",
+        redirectUris: [
+          "https://oauth-redirect.googleusercontent.com/r/user_bound_custom-mcp-109752885578851795204-mcp_auvrynt_dpdns_org",
+        ],
+      },
+    ],
+  };
+  const geminiProvider = new SingleUserOAuthProvider(geminiConfig, resource);
+  const staticGemini = await geminiProvider.clientsStore.getClient("static-gemini-client");
+  assert.ok(staticGemini);
+  assert.equal(staticGemini.client_id, "static-gemini-client");
+  assert.equal(staticGemini.client_secret, "gemini-secret-123");
 } finally {
   await rm(stateDir, { recursive: true, force: true });
 }

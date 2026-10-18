@@ -62,10 +62,12 @@ function registerSerenaHealthTools(
     async ({ workspaceId, projectRelativePath }) => {
       try {
         const workspace = workspaces.getWorkspace(workspaceId);
+        const projectRoot = projectRelativePath
+          ? workspaces.resolvePath(workspace, projectRelativePath)
+          : workspace.root;
         const session = await serenaManager.startSession(
           workspaceId,
-          workspace.root,
-          projectRelativePath,
+          projectRoot,
         );
         return {
           content: [textBlock(JSON.stringify({
@@ -159,12 +161,14 @@ function registerSerenaHealthTools(
     },
     async ({ workspaceId, projectRelativePath }) => {
       try {
-        await serenaManager.stopWorkspaceSessions(workspaceId);
         const workspace = workspaces.getWorkspace(workspaceId);
+        const projectRoot = projectRelativePath
+          ? workspaces.resolvePath(workspace, projectRelativePath)
+          : workspace.root;
+        await serenaManager.stopWorkspaceSessions(workspaceId);
         const session = await serenaManager.startSession(
           workspaceId,
-          workspace.root,
-          projectRelativePath,
+          projectRoot,
         );
         return {
           content: [textBlock(JSON.stringify({
@@ -240,86 +244,89 @@ function registerSerenaSemanticTools(
     {
       name: "serena_find_symbol",
       serenaName: "find_symbol",
-      description: "Find a symbol by name across the active project. Returns file location, kind, and context. Requires an active Serena session.",
+      description: "Find symbols by Serena name-path pattern. Requires an active Serena session.",
       inputSchema: {
         workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
-        query: z.string().describe("Symbol name to search for (class, function, variable, etc.)."),
-        maxResults: z.number().int().optional().describe("Maximum results (default 20, max 100)."),
+        query: z.string().describe("Symbol name or Serena name-path pattern to search for."),
+        filePath: z.string().optional().describe("Optional workspace-relative file or directory that restricts the search."),
+        includeBody: z.boolean().optional().describe("Include the symbol source body."),
+        includeInfo: z.boolean().optional().describe("Include hover-like signature/doc information."),
+        maxResults: z.number().int().min(1).max(100).optional().describe("Maximum symbol matches."),
       },
     },
     {
       name: "serena_find_referencing_symbols",
       serenaName: "find_referencing_symbols",
-      description: "Find all references to a symbol across the project. Requires an active Serena session.",
+      description: "Find references to an exact Serena name path in a known source file. Requires an active Serena session.",
       inputSchema: {
         workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
-        query: z.string().describe("Symbol name to find references for."),
-        maxResults: z.number().int().optional().describe("Maximum results (default 50, max 200)."),
+        query: z.string().describe("Exact Serena name path of the symbol to find references for."),
+        filePath: z.string().describe("Workspace-relative file containing the symbol."),
+        maxChars: z.number().int().min(1).max(500_000).optional().describe("Maximum backend answer size in characters."),
       },
     },
     {
       name: "serena_get_symbols_overview",
       serenaName: "get_symbols_overview",
-      description: "Get an overview of all top-level symbols in a file. Returns classes, functions, variables with locations. Requires an active Serena session.",
+      description: "Get an overview of symbols in a source file. Requires an active Serena session.",
       inputSchema: {
         workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
         filePath: z.string().describe("Workspace-relative path to the file."),
+        depth: z.number().int().min(-1).max(10).optional().describe("Descendant depth for the symbol overview."),
+        maxChars: z.number().int().min(1).max(500_000).optional().describe("Maximum backend answer size in characters."),
       },
     },
     {
       name: "serena_search_for_pattern",
       serenaName: "search_for_pattern",
-      description: "Search the project for a regex pattern. Uses Serena's language-aware search. Requires an active Serena session.",
+      description: "Search project files with Serena's regex search. Requires an active Serena session.",
       inputSchema: {
         workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
-        pattern: z.string().describe("Regex or text pattern to search for."),
-        filePattern: z.string().optional().describe("Optional file extension filter (e.g. '*.ts')."),
-        maxResults: z.number().int().optional().describe("Maximum results (default 50, max 500)."),
+        pattern: z.string().describe("Regex pattern to search for."),
+        path: z.string().optional().describe("Optional workspace-relative file or subdirectory to search."),
+        filePattern: z.string().optional().describe("Optional project-relative include glob (e.g. 'src/**/*.ts')."),
+        contextLinesBefore: z.number().int().min(0).max(20).optional(),
+        contextLinesAfter: z.number().int().min(0).max(20).optional(),
+        codeOnly: z.boolean().optional().describe("Restrict the search to files Serena recognizes as code."),
+        maxChars: z.number().int().min(1).max(500_000).optional().describe("Maximum backend answer size in characters."),
       },
     },
     {
       name: "serena_find_implementations",
       serenaName: "find_implementations",
-      description: "Find all implementations of an interface, abstract class, or method. Requires an active Serena session.",
+      description: "Find implementations of an exact Serena name path in a known source file. Requires an active Serena session.",
       inputSchema: {
         workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
-        query: z.string().describe("Symbol name to find implementations for."),
-        maxResults: z.number().int().optional().describe("Maximum results (default 20, max 100)."),
+        query: z.string().describe("Exact Serena name path to find implementations for."),
+        filePath: z.string().describe("Workspace-relative file containing the symbol."),
+        includeInfo: z.boolean().optional().describe("Include hover-like signature/doc information for implementations."),
+        maxChars: z.number().int().min(1).max(500_000).optional().describe("Maximum backend answer size in characters."),
       },
     },
     {
       name: "serena_find_declaration",
       serenaName: "find_declaration",
-      description: "Find the declaration location of a symbol. Requires an active Serena session.",
+      description: "Resolve the declaration for one captured symbol usage in a known file. Requires an active Serena session.",
       inputSchema: {
         workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
-        query: z.string().describe("Symbol name to find the declaration for."),
+        filePath: z.string().describe("Workspace-relative source file containing the symbol usage."),
+        regex: z.string().describe("Regex with exactly one capture group identifying the symbol usage whose declaration should be resolved."),
+        containingSymbol: z.string().optional().describe("Optional containing Serena name path to restrict the lookup."),
+        includeBody: z.boolean().optional(),
+        includeInfo: z.boolean().optional(),
       },
     },
     {
       name: "serena_get_diagnostics_for_file",
       serenaName: "get_diagnostics_for_file",
-      description: "Get language server diagnostics for a specific file (errors, warnings, hints). Requires an active Serena session.",
+      description: "Get language-server diagnostics for a source file. Requires an active Serena session.",
       inputSchema: {
         workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
         filePath: z.string().describe("Workspace-relative path to the file."),
-      },
-    },
-    {
-      name: "serena_get_diagnostics_for_symbol",
-      serenaName: "get_diagnostics_for_symbol",
-      description: "Get diagnostics for a specific symbol. Requires an active Serena session.",
-      inputSchema: {
-        workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
-        query: z.string().describe("Symbol name to get diagnostics for."),
-      },
-    },
-    {
-      name: "serena_serena_info",
-      serenaName: "serena_info",
-      description: "Get Serena server version, capabilities, and configuration info. Requires an active Serena session.",
-      inputSchema: {
-        workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
+        startLine: z.number().int().min(0).optional(),
+        endLine: z.number().int().min(-1).optional(),
+        minSeverity: z.number().int().min(1).max(4).optional().describe("LSP severity threshold: 1=error through 4=hint."),
+        maxChars: z.number().int().min(1).max(500_000).optional().describe("Maximum backend answer size in characters."),
       },
     },
     {
@@ -334,9 +341,10 @@ function registerSerenaSemanticTools(
     {
       name: "serena_list_memories",
       serenaName: "list_memories",
-      description: "List all Serena memory entries. Requires an active Serena session.",
+      description: "List Serena memory entries. Requires an active Serena session.",
       inputSchema: {
         workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
+        topic: z.string().optional().describe("Optional memory topic filter supported by Serena 1.6+."),
       },
     },
     {
@@ -361,9 +369,9 @@ function registerSerenaSemanticTools(
       description: "Replace the body of a named symbol (function, class, method) while preserving its signature. Requires an active Serena session.",
       inputSchema: {
         workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
-        symbol: z.string().describe("Name of the symbol to replace."),
+        symbol: z.string().describe("Exact Serena name path of the symbol to replace."),
         newBody: z.string().describe("New body content for the symbol."),
-        filePath: z.string().optional().describe("Workspace-relative file path (disambiguates symbols with same name)."),
+        filePath: z.string().describe("Workspace-relative file containing the symbol."),
       },
     },
     {
@@ -372,9 +380,9 @@ function registerSerenaSemanticTools(
       description: "Insert code before a named symbol's definition. Requires an active Serena session.",
       inputSchema: {
         workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
-        symbol: z.string().describe("Symbol name to insert before."),
+        symbol: z.string().describe("Exact Serena name path to insert before."),
         content: z.string().describe("Code content to insert."),
-        filePath: z.string().optional().describe("Workspace-relative file path."),
+        filePath: z.string().describe("Workspace-relative file containing the symbol."),
       },
     },
     {
@@ -383,9 +391,9 @@ function registerSerenaSemanticTools(
       description: "Insert code after a named symbol's definition. Requires an active Serena session.",
       inputSchema: {
         workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
-        symbol: z.string().describe("Symbol name to insert after."),
+        symbol: z.string().describe("Exact Serena name path to insert after."),
         content: z.string().describe("Code content to insert."),
-        filePath: z.string().optional().describe("Workspace-relative file path."),
+        filePath: z.string().describe("Workspace-relative file containing the symbol."),
       },
     },
     {
@@ -394,9 +402,9 @@ function registerSerenaSemanticTools(
       description: "Rename a symbol across the entire project. Updates all references. Requires an active Serena session.",
       inputSchema: {
         workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
-        symbol: z.string().describe("Current symbol name."),
+        symbol: z.string().describe("Exact Serena name path of the symbol to rename."),
         newName: z.string().describe("New symbol name."),
-        filePath: z.string().optional().describe("Workspace-relative file path to disambiguate."),
+        filePath: z.string().describe("Workspace-relative file containing the symbol."),
       },
     },
     {
@@ -405,8 +413,8 @@ function registerSerenaSemanticTools(
       description: "Delete a symbol with safety checks. Only deletes if it has no external references. Requires an active Serena session.",
       inputSchema: {
         workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
-        symbol: z.string().describe("Symbol name to delete."),
-        filePath: z.string().optional().describe("Workspace-relative file path to disambiguate."),
+        symbol: z.string().describe("Serena name-path pattern of the symbol to delete."),
+        filePath: z.string().describe("Workspace-relative file containing the symbol."),
       },
     },
   ];

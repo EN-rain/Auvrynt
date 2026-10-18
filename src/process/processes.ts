@@ -474,13 +474,26 @@ export class ProcessManager {
 
   async stopAllProcesses(): Promise<void> {
     const running = Array.from(this.processes.values()).filter((tracked) => tracked.status === "running");
-    await Promise.allSettled(
+    const results = await Promise.allSettled(
       running.map((tracked) => this.stopProcess({
         workspaceId: tracked.workspaceId,
         processId: tracked.id,
         force: true,
       })),
     );
+    const failures: unknown[] = [];
+    results.forEach((result, index) => {
+      if (result.status === "rejected") {
+        failures.push(result.reason);
+        return;
+      }
+      if (!result.value.stopped) {
+        failures.push(new Error(`Process ${running[index]?.id ?? "unknown"} did not stop during shutdown.`));
+      }
+    });
+    if (failures.length > 0) {
+      throw new AggregateError(failures, `Failed to stop ${failures.length} process(es) during shutdown.`);
+    }
   }
 
   async stopAllProcessesForWorkspace(workspaceId: string, ownerClientId?: string): Promise<number> {
@@ -495,7 +508,23 @@ export class ProcessManager {
         force: false,
       })),
     );
-    return results.filter((result) => result.status === "fulfilled" && result.value.stopped).length;
+    const failures: unknown[] = [];
+    results.forEach((result, index) => {
+      if (result.status === "rejected") {
+        failures.push(result.reason);
+        return;
+      }
+      if (!result.value.stopped) {
+        failures.push(new Error(`Process ${targets[index]?.id ?? "unknown"} did not stop.`));
+      }
+    });
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures,
+        `Failed to stop ${failures.length} process(es) for workspace ${workspaceId}.`,
+      );
+    }
+    return targets.length;
   }
 
   runningCount(): number {

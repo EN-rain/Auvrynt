@@ -176,7 +176,7 @@ export async function runAuvryntDashboardCommand(
   });
 }
 
-async function selectWindowsFolder(initialPath: string): Promise<string | undefined> {
+export function buildWindowsFolderPickerScript(): string {
   // Modern Vista+ folder picker (IFileOpenDialog + FOS_PICKFOLDERS).
   // Avoids the classic tree-style FolderBrowserDialog ("Browse For Folder").
   const csharp = [
@@ -186,7 +186,9 @@ async function selectWindowsFolder(initialPath: string): Promise<string | undefi
     "  [DllImport(\"shell32.dll\", CharSet = CharSet.Unicode)]",
     "  static extern int SHCreateItemFromParsingName([MarshalAs(UnmanagedType.LPWStr)] string path, IntPtr pbc, ref Guid riid, out IShellItem item);",
     "  [ComImport, Guid(\"DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7\")] class FileOpenDialogRCW {}",
-    "  [ComImport, Guid(\"42f85136-db7e-439e-9acc-46061d997987\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]",
+    // IFileOpenDialog has its own IID; using the IFileDialog IID (or a typo)
+    // makes PowerShell fail before the folder dialog can be shown.
+    "  [ComImport, Guid(\"D57C7288-D4AD-4768-BE02-9D969532D960\"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]",
     "  interface IFileOpenDialog {",
     "    [PreserveSig] int Show(IntPtr parent); void SetFileTypes(uint c, IntPtr rg); void SetFileTypeIndex(uint i);",
     "    void GetFileTypeIndex(out uint i); void Advise(IntPtr pfde, out uint cookie); void Unadvise(uint cookie);",
@@ -225,14 +227,37 @@ async function selectWindowsFolder(initialPath: string): Promise<string | undefi
     "}",
   ].join("\n");
 
-  const script = [
+  return [
     `$code = @'\n${csharp}\n'@`,
-    "Add-Type -TypeDefinition $code -Language CSharp",
+    "$ErrorActionPreference = 'Stop'",
+    "Add-Type -TypeDefinition $code -Language CSharp -ErrorAction Stop",
     "$initial = $env:AUVRYNT_PICKER_INITIAL",
-    "if (-not $initial -or -not (Test-Path -LiteralPath $initial)) { $initial = [Environment]::GetFolderPath('Desktop') }",
-    "$path = [AuvryntFolderPicker]::Select('Choose Auvrynt workspace', $initial)",
+    "if (-not $initial -or -not (Test-Path -LiteralPath $initial -PathType Container)) { $initial = [Environment]::GetFolderPath('Desktop') }",
+    "$path = $null",
+    "try {",
+    "  $path = [AuvryntFolderPicker]::Select('Choose Auvrynt workspace', $initial)",
+    "} catch {",
+    "  # Keep a reliable fallback for machines where the Vista picker COM contract is unavailable.",
+    "  $dialog = $null",
+    "  try {",
+    "    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop",
+    "    $dialog = New-Object System.Windows.Forms.FolderBrowserDialog",
+    "    $dialog.Description = 'Choose Auvrynt workspace'",
+    "    $dialog.ShowNewFolderButton = $false",
+    "    if ($initial -and (Test-Path -LiteralPath $initial -PathType Container)) { $dialog.SelectedPath = $initial }",
+    "    if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $path = $dialog.SelectedPath }",
+    "  } catch {",
+    "    throw 'Windows folder pickers are unavailable.'",
+    "  } finally {",
+    "    if ($dialog) { $dialog.Dispose() }",
+    "  }",
+    "}",
     "if ($path) { [Console]::Out.Write($path) }",
   ].join("; ");
+}
+
+async function selectWindowsFolder(initialPath: string): Promise<string | undefined> {
+  const script = buildWindowsFolderPickerScript();
 
   try {
     return cleanSelectedPath(await runPicker("powershell.exe", ["-NoProfile", "-STA", "-Command", script], initialPath));
@@ -240,7 +265,10 @@ async function selectWindowsFolder(initialPath: string): Promise<string | undefi
     if (isMissingExecutable(error)) {
       throw new Error("Windows PowerShell is unavailable, so the native workspace picker cannot be opened.");
     }
-    throw error;
+    // Do not send PowerShell/COM diagnostics (which can contain implementation
+    // details and stack traces) to the dashboard. The route logs the failure
+    // boundary, while the user gets a concise, retryable message.
+    throw new Error("The Windows folder picker could not be opened. Please try again.");
   }
 }
 

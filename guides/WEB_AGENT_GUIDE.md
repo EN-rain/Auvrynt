@@ -98,20 +98,31 @@ Before executing any tool, classify the request into one primary task type:
 
 ---
 
-## Required Workflow
+## Core Workflow
 
-1. Inspect `package.json` and relevant framework configuration.
-2. Detect package manager from lockfiles (`package-lock.json` → npm, `yarn.lock` → yarn, `pnpm-lock.yaml` → pnpm, `bun.lockb` → bun).
-3. Read existing scripts before choosing commands. Never guess a dev command when scripts exist.
-4. Start the dev server using **persistent process tools** — never a blocking shell call.
-5. Confirm the real local URL from startup logs. Do not invent a URL or port.
-6. Navigate a browser tool to that URL.
-7. Inspect DOM, accessibility info, console errors, and failed network requests as needed.
-8. Capture screenshots at relevant viewport sizes.
-9. Make minimal source changes. Preserve the framework and existing architecture.
-10. Run the smallest useful validation after changes.
-11. Compare screenshots when matching a reference design.
-12. Stop unnecessary processes after the task is complete.
+1. Inspect only the project files and framework/package configuration needed for the request.
+2. Detect the package manager from lockfiles (`package-lock.json` → npm, `yarn.lock` → yarn, `pnpm-lock.yaml` → pnpm, `bun.lockb` → bun).
+3. Read existing scripts before choosing commands. Never guess a dev, test, or build command when scripts exist.
+4. Make the smallest relevant source change while preserving the existing framework and architecture.
+5. Run validation proportional to the changed surface.
+6. Use browser/runtime tools only when the requested behavior or claimed result requires runtime evidence.
+7. Stop processes started for the task when they are no longer needed.
+
+### Browser verification is required for
+- runtime browser bugs;
+- user-visible behavior changes that cannot be established statically;
+- responsive UI changes;
+- visual-reference matching;
+- console/network behavior;
+- interactive or accessibility flows.
+
+When browser verification is required, start or reuse the dev server with persistent process tools, confirm the real local URL from startup logs, inspect only the relevant DOM/accessibility/console/network state, capture the needed viewports, and compare screenshots when matching a reference.
+
+### Browser verification is not automatically required for
+- copy or typo changes;
+- isolated compiler/test failures;
+- backend-only changes;
+- static configuration changes with an adequate non-browser validation path.
 
 ---
 

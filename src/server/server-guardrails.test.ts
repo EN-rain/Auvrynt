@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { loadConfig } from "../infrastructure/config.js";
 import { createServer, requiredScopesForToolCall, requiredScopesForToolName, toolIntegrationEnabled } from "../server.js";
 import { hardenHttpServer } from "../infrastructure/http-server-hardening.js";
+import { isLoopbackRequest } from "../infrastructure/logger.js";
 
 const stateDir = await mkdtemp(join(tmpdir(), "auvrynt-server-guardrails-"));
 const config = loadConfig({
@@ -23,8 +24,8 @@ const config = loadConfig({
 
 assert.deepEqual(requiredScopesForToolName("read_file"), ["auvrynt:read"]);
 assert.deepEqual(requiredScopesForToolName("write_file"), ["auvrynt:write"]);
-assert.deepEqual(requiredScopesForToolName("open_workspace"), ["auvrynt:read", "auvrynt:write"]);
-assert.deepEqual(requiredScopesForToolCall("open_workspace", { mode: "checkout" }), ["auvrynt:read", "auvrynt:write"]);
+assert.deepEqual(requiredScopesForToolName("open_workspace"), ["auvrynt:read"]);
+assert.deepEqual(requiredScopesForToolCall("open_workspace", { mode: "checkout" }), ["auvrynt:read"]);
 assert.deepEqual(requiredScopesForToolCall("open_workspace", { mode: "worktree" }), ["auvrynt:read", "auvrynt:write", "auvrynt:process"]);
 assert.deepEqual(requiredScopesForToolName("close_workspace"), ["auvrynt:write", "auvrynt:process"]);
 assert.deepEqual(requiredScopesForToolName("start_process"), ["auvrynt:process"]);
@@ -49,12 +50,26 @@ assert.deepEqual(requiredScopesForToolName("aseprite_set_pixels"), ["auvrynt:ase
 assert.deepEqual(requiredScopesForToolName("godot_get_scene_tree"), ["auvrynt:godot"]);
 assert.deepEqual(requiredScopesForToolName("serena_find_symbol"), ["auvrynt:serena"]);
 
+const spoofedRemote = {
+  ip: "127.0.0.1",
+  socket: { remoteAddress: "203.0.113.7" },
+  header: (name: string) => {
+    if (name.toLowerCase() === "x-forwarded-for") return "127.0.0.1";
+    if (name.toLowerCase() === "forwarded") return "for=127.0.0.1";
+    return undefined;
+  },
+} as any;
+assert.equal(isLoopbackRequest(spoofedRemote), false, "forwarded metadata must not make a remote socket local");
+
 assert.equal(toolIntegrationEnabled(config, "blender_get_scene_info"), false);
 assert.equal(toolIntegrationEnabled(config, "inspect_page"), false);
 assert.equal(toolIntegrationEnabled(config, "godot_gdscript_environment"), false);
 assert.equal(toolIntegrationEnabled(config, "godot_dotnet_environment"), true);
-assert.equal(toolIntegrationEnabled(config, "serena_find_symbol"), false);
-assert.equal(toolIntegrationEnabled(config, "read_file"), true);
+  assert.equal(toolIntegrationEnabled(config, "serena_find_symbol"), false);
+assert.equal(toolIntegrationEnabled(config, "desktop_capture"), false);
+assert.equal(toolIntegrationEnabled(config, "krita_web_agent_signal"), false);
+assert.equal(toolIntegrationEnabled(config, "codex_status"), false);
+  assert.equal(toolIntegrationEnabled(config, "read_file"), true);
 
 const running = createServer(config);
 try {
@@ -65,7 +80,8 @@ try {
     blender: true,
     aseprite: true,
     serena: false,
-    playwright: true, context7: false, obsidian: false, roblox: false,
+    solOrchestrator: true,
+    playwright: true, roblox: false, desktop: true, krita: true, openPencil: false,
   });
   assert.equal(update.updated, true);
   assert.equal(update.closedSessions, 0);
@@ -74,34 +90,45 @@ try {
   assert.equal(running.config.integrations.playwright, true);
   assert.equal(toolIntegrationEnabled(running.config, "blender_get_scene_info"), true);
   assert.equal(toolIntegrationEnabled(running.config, "inspect_page"), true);
+  assert.equal(toolIntegrationEnabled(running.config, "desktop_capture"), true);
+  assert.equal(toolIntegrationEnabled(running.config, "krita_web_agent_signal"), true);
+  assert.equal(toolIntegrationEnabled(running.config, "codex_status"), true);
 
   running.updateSessionLimit(3);
   assert.equal(running.config.maxSessions, 3);
   assert.equal(running.config.maxSessionsPerClient, 3);
   running.updateSessionLimit(99999);
-  const rootUpdate = running.updateWorkspaceRoots([stateDir]);
+  assert.equal(running.config.maxSessions, 256);
+  assert.equal(running.config.maxSessionsPerClient, 3);
+  const rootUpdate = await running.updateWorkspaceRoots([stateDir]);
   assert.equal(rootUpdate.updated, true);
   assert.deepEqual(running.config.allowedRoots, [stateDir]);
-  running.updateWorkspaceRoots([process.cwd()]);
+  await running.updateWorkspaceRoots([process.cwd()]);
 
   const httpServer = running.app.listen(0, "127.0.0.1");
   hardenHttpServer(httpServer);
   try {
     await new Promise<void>((resolveListen) => httpServer.once("listening", resolveListen));
     const { port } = httpServer.address() as AddressInfo;
-    const publicHealth = await fetch(`http://127.0.0.1:${port}/healthz`, {
+    const forwardedLocalHealth = await fetch(`http://127.0.0.1:${port}/healthz`, {
       headers: { "x-forwarded-for": "203.0.113.10" },
     });
-    assert.equal(publicHealth.status, 200);
-    assert.deepEqual(await publicHealth.json(), { ok: true });
-    assert.equal(publicHealth.headers.get("x-powered-by"), null);
-    assert.equal(publicHealth.headers.get("cache-control"), "no-store");
+    const forwardedLocalHealthBody = await forwardedLocalHealth.json() as Record<string, unknown>;
+    assert.equal(forwardedLocalHealth.status, 200);
+    assert.equal(forwardedLocalHealthBody.ok, true);
+    assert.equal(forwardedLocalHealthBody.name, "auvrynt");
+    assert.ok("pid" in forwardedLocalHealthBody);
+    assert.equal(forwardedLocalHealth.headers.get("x-powered-by"), null);
+    assert.equal(forwardedLocalHealth.headers.get("cache-control"), "no-store");
 
-    const publicReady = await fetch(`http://127.0.0.1:${port}/readyz`, {
+    const forwardedLocalReady = await fetch(`http://127.0.0.1:${port}/readyz`, {
       headers: { "x-forwarded-for": "203.0.113.10" },
     });
-    assert.equal(publicReady.status, 200);
-    assert.deepEqual(await publicReady.json(), { ready: true });
+    const forwardedLocalReadyBody = await forwardedLocalReady.json() as Record<string, unknown>;
+    assert.equal(forwardedLocalReady.status, 200);
+    assert.equal(forwardedLocalReadyBody.ready, true);
+    assert.ok("memory" in forwardedLocalReadyBody);
+    assert.ok("sessionsByState" in forwardedLocalReadyBody);
 
     const localReady = await fetch(`http://127.0.0.1:${port}/readyz`);
     const localReadyBody = await localReady.json() as Record<string, unknown>;
@@ -161,21 +188,27 @@ try {
     const localDashboardData = await fetch(`http://127.0.0.1:${port}/dashboard/data`);
     const localDashboardBody = await localDashboardData.json() as Record<string, unknown>;
     assert.equal(localDashboardData.status, 200);
-    assert.equal(localDashboardBody.maxSessions, 99999);
+    assert.equal(localDashboardBody.maxSessions, 256);
     assert.equal(localDashboardBody.agentState, "waiting");
     assert.equal(localDashboardBody.activeToolCalls, 0);
     assert.ok(localDashboardBody.workspaceChanges && typeof localDashboardBody.workspaceChanges === "object");
     assert.ok(Array.isArray(localDashboardBody.integrations));
     assert.ok(Array.isArray(localDashboardBody.logs));
 
-    const publicDashboard = await fetch(`http://127.0.0.1:${port}/dashboard`, {
-      headers: { "x-forwarded-for": "203.0.113.10" },
+    const forwardedHeaderLocalDashboard = await fetch(`http://127.0.0.1:${port}/dashboard`, {
+      headers: {
+        "x-forwarded-for": "203.0.113.10",
+        forwarded: "for=203.0.113.10",
+      },
     });
-    assert.equal(publicDashboard.status, 404);
-    const publicDashboardData = await fetch(`http://127.0.0.1:${port}/dashboard/data`, {
-      headers: { "x-forwarded-for": "203.0.113.10" },
+    assert.equal(forwardedHeaderLocalDashboard.status, 200, "forwarded headers must not override the actual loopback socket");
+    const forwardedHeaderLocalDashboardData = await fetch(`http://127.0.0.1:${port}/dashboard/data`, {
+      headers: {
+        "x-forwarded-for": "203.0.113.10",
+        forwarded: "for=203.0.113.10",
+      },
     });
-    assert.equal(publicDashboardData.status, 404);
+    assert.equal(forwardedHeaderLocalDashboardData.status, 200);
 
     for (let attempt = 0; attempt < 600; attempt++) {
       const registrationAttempt = await fetch(`http://127.0.0.1:${port}/register`, {

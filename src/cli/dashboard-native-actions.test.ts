@@ -4,9 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   assertDashboardCommandSupported,
+  buildWindowsFolderPickerScript,
   parseAuvryntDashboardCommand,
   runAuvryntDashboardCommand,
 } from "./dashboard-native-actions.js";
+
+const windowsFolderPickerScript = buildWindowsFolderPickerScript();
+assert.match(windowsFolderPickerScript, /D57C7288-D4AD-4768-BE02-9D969532D960/);
+assert.doesNotMatch(windowsFolderPickerScript, /42f85136-db7e-439e-9acc-46061d997987/i);
+assert.match(windowsFolderPickerScript, /FolderBrowserDialog/);
+assert.match(windowsFolderPickerScript, /Test-Path -LiteralPath \$initial -PathType Container/);
+assert.match(windowsFolderPickerScript, /Windows folder pickers are unavailable/);
 
 assert.deepEqual(parseAuvryntDashboardCommand("auvrynt status"), {
   args: ["status"],

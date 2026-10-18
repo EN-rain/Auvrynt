@@ -23,6 +23,7 @@ export interface WorkspaceMutation {
 
 export interface WorkspaceChangeTracker {
   activateWorkspace(workspaceId: string, workspaceRoot: string): void;
+  deactivateWorkspace(workspaceId: string): boolean;
   recordMutation(mutation: WorkspaceMutation): void;
   snapshot(): WorkspaceChangeAnalytics;
 }
@@ -72,6 +73,17 @@ export function createWorkspaceChangeTracker(now: () => Date = () => new Date())
     activateWorkspace(workspaceId, workspaceRoot) {
       const [key] = ensureWorkspace(workspaceId, workspaceRoot);
       activeWorkspaceKey = key;
+    },
+
+    deactivateWorkspace(workspaceId) {
+      let removed = false;
+      for (const [key, activity] of workspaces) {
+        if (activity.workspaceId !== workspaceId) continue;
+        workspaces.delete(key);
+        if (activeWorkspaceKey === key) activeWorkspaceKey = undefined;
+        removed = true;
+      }
+      return removed;
     },
 
     recordMutation(mutation) {

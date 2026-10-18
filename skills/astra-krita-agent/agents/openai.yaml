@@ -1,0 +1,4 @@
+interface:
+  display_name: "Astra Krita Agent"
+  short_description: "Safe no-plugin Krita workflows with visual verification"
+  default_prompt: "Use $astra-krita-agent to inspect, edit, verify, and recover Krita documents through bounded target-only tools."

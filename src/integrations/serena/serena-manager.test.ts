@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   SerenaManager,
   detectSerenaEnvironment,
   defaultSerenaConfig,
+  withTimeout,
   type SerenaConfig,
 } from "./serena-manager.js";
 
@@ -13,18 +15,27 @@ import {
 // without actually launching Serena.
 function buildFakeSession(workspaceId: string, projectRoot: string, tools: string[]) {
   const id = `serena_fake_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const calls: Array<{ name: string; arguments?: Record<string, unknown> }> = [];
   return {
     sessionId: id,
     workspaceId,
     projectRoot,
-    processPid: 12345,
+    processPid: null as number | null,
     mcpInitialized: true,
     activatedProject: projectRoot,
     exposedTools: tools,
     status: "active" as const,
     createdAt: Date.now(),
     lastUsedAt: Date.now(),
-    client: { callTool: async () => ({}), ping: async () => {}, close: async () => {} },
+    calls,
+    client: {
+      callTool: async (request: { name: string; arguments?: Record<string, unknown> }) => {
+        calls.push(request);
+        return {};
+      },
+      ping: async () => {},
+      close: async () => {},
+    },
     transport: { close: async () => {} },
   };
 }
@@ -200,6 +211,34 @@ try {
   assert.equal(mgr.getSessionInfo().length, 0);
 }
 
+// --- SerenaManager stopSession force-terminates its owned child when MCP close fails ---
+{
+  const mgr = new SerenaManager(makeConfig({ enabled: false }));
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  assert.ok(child.pid, "test child must have a pid");
+  const session = buildFakeSession("ws_owned_child", testDir, ["find_symbol"]);
+  session.processPid = child.pid!;
+  session.client.close = async () => { throw new Error("client close failed"); };
+  session.transport.close = async () => { throw new Error("transport close failed"); };
+  (mgr as any).sessions.set(session.sessionId, session);
+
+  try {
+    await mgr.stopSession(session.sessionId);
+    assert.equal(mgr.getSessionInfo().length, 0);
+    for (let attempt = 0; attempt < 20; attempt++) {
+      try {
+        process.kill(child.pid!, 0);
+      } catch {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.throws(() => process.kill(child.pid!, 0));
+  } finally {
+    try { process.kill(child.pid!, "SIGKILL"); } catch { /* already stopped */ }
+  }
+}
+
 // --- SerenaManager healthCheck (no session) ---
 {
   const mgr = new SerenaManager(makeConfig({ enabled: false }));
@@ -214,6 +253,46 @@ try {
   await mgr.getEnvironment();
   mgr.clearEnvironmentCache();
   assert.equal((mgr as any).environmentCache, null);
+}
+
+// --- withTimeout rejects bounded hangs ---
+{
+  const startedAt = Date.now();
+  await assert.rejects(
+    () => withTimeout(new Promise<never>(() => {}), 10, "bounded timeout"),
+    /bounded timeout/,
+  );
+  assert.ok(Date.now() - startedAt < 1_000, "timeout helper must reject promptly");
+}
+
+// --- Same-workspace session reuse happens before the maxInstances gate ---
+{
+  const mgr = new SerenaManager(makeConfig({ enabled: true, executable: "unused", maxInstances: 1 }));
+  (mgr as any).environmentCache = {
+    installed: true,
+    executable: "unused",
+    initializationState: "ready",
+    backend: "LSP",
+    actionableProblems: [],
+  };
+  (mgr as any).environmentCachedAt = Date.now();
+  const session = buildFakeSession("ws_reuse", testDir, ["find_symbol"]);
+  (mgr as any).sessions.set(session.sessionId, session);
+  const reused = await mgr.startSession("ws_reuse", testDir);
+  assert.equal(reused.sessionId, session.sessionId);
+  assert.equal(mgr.getSessionInfo().length, 1);
+}
+
+// --- Health checks use the configured request timeout ---
+{
+  const mgr = new SerenaManager(makeConfig({ enabled: false, requestTimeoutMs: 10 }));
+  const session = buildFakeSession("ws_health_timeout", testDir, ["find_symbol"]);
+  session.client.ping = async () => new Promise<void>(() => {});
+  (mgr as any).sessions.set(session.sessionId, session);
+  const health = await mgr.healthCheck("ws_health_timeout");
+  assert.equal(health.alive, false);
+  assert.equal(health.status, "error");
+  assert.match(health.error ?? "", /health check timed out/);
 }
 
 // --- maxInstances limit ---
@@ -233,7 +312,7 @@ try {
 // --------------------------------------------------------------------------
 // Security: path validation via callTool
 // --------------------------------------------------------------------------
-const WS_ROOT = "C:/Users/test/project";
+const WS_ROOT = testDir;
 const WS_ID_SEC = "ws_sec";
 
 {
@@ -243,7 +322,7 @@ const WS_ID_SEC = "ws_sec";
 
   // Relative path traversal beyond workspace root
   try {
-    await mgr.callTool(WS_ID_SEC, "find_symbol", { query: "foo", path: "../../etc/passwd" }, WS_ROOT);
+    await mgr.callTool(WS_ID_SEC, "find_symbol", { query: "foo", filePath: "../../etc/passwd" }, WS_ROOT);
     assert.fail("Should reject path traversal");
   } catch (err) {
     assert.ok((err as Error).message.includes("outside the workspace") || (err as Error).message.includes("invalid"));
@@ -251,7 +330,7 @@ const WS_ID_SEC = "ws_sec";
 
   // Absolute path on different drive — should be rejected
   try {
-    await mgr.callTool(WS_ID_SEC, "find_symbol", { query: "foo", path: "D:/other/file.ts" }, WS_ROOT);
+    await mgr.callTool(WS_ID_SEC, "find_symbol", { query: "foo", filePath: resolve(WS_ROOT, "..", "outside.ts") }, WS_ROOT);
     assert.fail("Should reject absolute path on different drive");
   } catch (err) {
     assert.ok((err as Error).message.includes("outside the workspace") || (err as Error).message.includes("invalid"));
@@ -260,7 +339,7 @@ const WS_ID_SEC = "ws_sec";
   // Absolute path with same root — should be accepted (validation passes, then callTool tries to invoke client)
   // The client mock will succeed so this should NOT throw a path error
   try {
-    await mgr.callTool(WS_ID_SEC, "find_symbol", { query: "foo", path: WS_ROOT + "/src/index.ts" }, WS_ROOT);
+    await mgr.callTool(WS_ID_SEC, "find_symbol", { query: "foo", filePath: join(WS_ROOT, "src", "index.ts") }, WS_ROOT);
     // If we get here, path validation passed (client mock succeeds)
   } catch (err) {
     // Only acceptable error is from client.callTool (not path validation)
@@ -269,7 +348,7 @@ const WS_ID_SEC = "ws_sec";
 
   // Trailing-slash root
   try {
-    await mgr.callTool(WS_ID_SEC, "find_symbol", { query: "foo", path: ".." }, WS_ROOT);
+    await mgr.callTool(WS_ID_SEC, "find_symbol", { query: "foo", filePath: ".." }, WS_ROOT);
     assert.fail("Should reject ..");
   } catch (err) {
     assert.ok((err as Error).message.includes("outside the workspace") || (err as Error).message.includes("invalid"));
@@ -283,11 +362,88 @@ const WS_ID_SEC = "ws_sec";
   (mgr as any).sessions.set(session.sessionId, session);
 
   try {
-    await mgr.callTool(WS_ID_SEC, "get_diagnostics_for_file", { file_path: "../secret.env" }, WS_ROOT);
+    await mgr.callTool(WS_ID_SEC, "get_diagnostics_for_file", { filePath: "../secret.env" }, WS_ROOT);
     assert.fail("Should reject file_path traversal");
   } catch (err) {
     assert.ok((err as Error).message.includes("outside the workspace") || (err as Error).message.includes("invalid"));
   }
+}
+
+// Embedded traversal must also be rejected after normalization.
+{
+  const mgr = new SerenaManager(makeConfig({ enabled: false }));
+  const session = buildFakeSession(WS_ID_SEC, WS_ROOT, ["find_symbol"]);
+  (mgr as any).sessions.set(session.sessionId, session);
+  await assert.rejects(
+    () => mgr.callTool(WS_ID_SEC, "find_symbol", { query: "foo", filePath: "src/../../secret.env" }, WS_ROOT),
+    /outside the workspace|invalid/,
+  );
+}
+
+// Auvrynt's stable Serena arguments must be translated to Serena 1.6 schemas.
+{
+  const mgr = new SerenaManager(makeConfig({ enabled: false }));
+  const tools = [
+    "find_symbol",
+    "find_referencing_symbols",
+    "get_symbols_overview",
+    "search_for_pattern",
+    "find_implementations",
+    "find_declaration",
+    "get_diagnostics_for_file",
+    "replace_symbol_body",
+    "insert_before_symbol",
+    "insert_after_symbol",
+    "rename_symbol",
+    "safe_delete_symbol",
+    "read_memory",
+    "list_memories",
+  ];
+  const session = buildFakeSession("ws_adapter", WS_ROOT, tools);
+  (mgr as any).sessions.set(session.sessionId, session);
+  const lastArgs = () => session.calls.at(-1)?.arguments;
+
+  await mgr.callTool("ws_adapter", "find_symbol", { query: "Foo/bar", filePath: "src/a.ts", includeInfo: true, maxResults: 3 }, WS_ROOT);
+  assert.deepEqual(lastArgs(), { name_path_pattern: "Foo/bar", relative_path: "src/a.ts", include_info: true, max_matches: 3 });
+
+  await mgr.callTool("ws_adapter", "find_referencing_symbols", { query: "Foo/bar", filePath: "src/a.ts", maxChars: 4000 }, WS_ROOT);
+  assert.deepEqual(lastArgs(), { name_path: "Foo/bar", relative_path: "src/a.ts", max_answer_chars: 4000 });
+
+  await mgr.callTool("ws_adapter", "get_symbols_overview", { filePath: "src/a.ts", depth: 1, maxChars: 5000 }, WS_ROOT);
+  assert.deepEqual(lastArgs(), { relative_path: "src/a.ts", depth: 1, max_answer_chars: 5000 });
+
+  await mgr.callTool("ws_adapter", "search_for_pattern", { pattern: "TODO", path: "src", filePattern: "**/*.ts", contextLinesBefore: 1, contextLinesAfter: 2, codeOnly: true, maxChars: 6000 }, WS_ROOT);
+  assert.deepEqual(lastArgs(), { substring_pattern: "TODO", relative_path: "src", paths_include_glob: "**/*.ts", context_lines_before: 1, context_lines_after: 2, restrict_search_to_code_files: true, max_answer_chars: 6000 });
+
+  await mgr.callTool("ws_adapter", "find_implementations", { query: "Foo", filePath: "src/a.ts", includeInfo: true, maxChars: 7000 }, WS_ROOT);
+  assert.deepEqual(lastArgs(), { name_path: "Foo", relative_path: "src/a.ts", include_info: true, max_answer_chars: 7000 });
+
+  await mgr.callTool("ws_adapter", "find_declaration", { filePath: "src/a.ts", regex: "foo\\.(bar)\\(\\)", containingSymbol: "Foo/method", includeInfo: true }, WS_ROOT);
+  assert.deepEqual(lastArgs(), { relative_path: "src/a.ts", regex: "foo\\.(bar)\\(\\)", containing_symbol_name_path: "Foo/method", include_info: true });
+
+  await mgr.callTool("ws_adapter", "get_diagnostics_for_file", { filePath: "src/a.ts", startLine: 2, endLine: 8, minSeverity: 2, maxChars: 8000 }, WS_ROOT);
+  assert.deepEqual(lastArgs(), { relative_path: "src/a.ts", start_line: 2, end_line: 8, min_severity: 2, max_answer_chars: 8000 });
+
+  await mgr.callTool("ws_adapter", "replace_symbol_body", { symbol: "Foo/bar", filePath: "src/a.ts", newBody: "function bar() {}" }, WS_ROOT);
+  assert.deepEqual(lastArgs(), { name_path: "Foo/bar", relative_path: "src/a.ts", body: "function bar() {}" });
+
+  await mgr.callTool("ws_adapter", "insert_before_symbol", { symbol: "Foo/bar", filePath: "src/a.ts", content: "const before = true;" }, WS_ROOT);
+  assert.deepEqual(lastArgs(), { name_path: "Foo/bar", relative_path: "src/a.ts", body: "const before = true;" });
+
+  await mgr.callTool("ws_adapter", "insert_after_symbol", { symbol: "Foo/bar", filePath: "src/a.ts", content: "const after = true;" }, WS_ROOT);
+  assert.deepEqual(lastArgs(), { name_path: "Foo/bar", relative_path: "src/a.ts", body: "const after = true;" });
+
+  await mgr.callTool("ws_adapter", "rename_symbol", { symbol: "Foo/bar", filePath: "src/a.ts", newName: "baz" }, WS_ROOT);
+  assert.deepEqual(lastArgs(), { name_path: "Foo/bar", relative_path: "src/a.ts", new_name: "baz" });
+
+  await mgr.callTool("ws_adapter", "safe_delete_symbol", { symbol: "Foo/bar", filePath: "src/a.ts" }, WS_ROOT);
+  assert.deepEqual(lastArgs(), { name_path_pattern: "Foo/bar", relative_path: "src/a.ts" });
+
+  await mgr.callTool("ws_adapter", "read_memory", { name: "notes" }, WS_ROOT);
+  assert.deepEqual(lastArgs(), { memory_name: "notes" });
+
+  await mgr.callTool("ws_adapter", "list_memories", { topic: "architecture" }, WS_ROOT);
+  assert.deepEqual(lastArgs(), { topic: "architecture" });
 }
 
 // Tool not in exposedTools

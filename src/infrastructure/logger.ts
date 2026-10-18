@@ -89,9 +89,10 @@ export function recentLogEntries(limit = 200): RecentLogEntry[] {
 }
 
 export function requestIp(req: Request): string | undefined {
-  // Express has already applied the server's trusted-proxy policy to req.ip.
-  // Reading forwarding headers directly here would let callers spoof log identities.
-  return req.ip ?? req.socket.remoteAddress;
+  // Security-sensitive locality checks must use the actual transport peer.
+  // `req.ip` can be influenced by Express proxy-trust configuration and
+  // caller-controlled forwarding headers, so it is intentionally ignored here.
+  return req.socket.remoteAddress;
 }
 
 export function isLoopbackIp(value: string | undefined): boolean {

@@ -14,11 +14,13 @@ export function completeIntegrationsConfig(
     godotCsharp: config?.godotCsharp ?? false,
     blender: config?.blender ?? false,
     aseprite: config?.aseprite ?? false,
-    serena: config?.serena ?? false,
+    serena: config?.serena ?? true,
+    solOrchestrator: config?.solOrchestrator ?? false,
     playwright: config?.playwright ?? false,
-    context7: config?.context7 ?? false,
-    obsidian: config?.obsidian ?? false,
     roblox: config?.roblox ?? false,
+    desktop: config?.desktop ?? false,
+    krita: config?.krita ?? false,
+    openPencil: config?.openPencil ?? false,
   };
 }
 
@@ -36,7 +38,7 @@ export async function ensureIntegrationChoicesConfigured(): Promise<void> {
   for (const key of INTEGRATION_KEYS) {
     const answer = await prompts.confirm({
       message: `Enable ${INTEGRATION_LABELS[key]}?`,
-      initialValue: false,
+      initialValue: key === "serena",
     });
     if (prompts.isCancel(answer)) {
       prompts.cancel("Integration setup cancelled.");

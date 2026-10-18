@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, relative } from "node:path";
 import type { WorkspaceRegistry } from "../../workspaces.js";
 import type { ToolResponse } from "../../pi-tools.js";
+import { getRequestContext } from "../../request-context.js";
 import { loadPlaywright } from "./playwright-runtime.js";
 import {
   closeBrowserWithDeadline,
@@ -11,6 +12,7 @@ import {
   type ClosableBrowserLike,
 } from "./browser-stability.js";
 import { assertSafeWebUrl, validateWebUrl } from "./web-tools.js";
+import { OwnedBrowserSessionRegistry } from "./browser-session-ownership.js";
 
 const MAX_SESSIONS = 4;
 const SESSION_TTL_MS = 15 * 60_000;
@@ -38,21 +40,27 @@ interface NetworkEntry {
   at: number;
 }
 interface ConsoleEntry { type: string; text: string; at: number }
+interface BrowserNetworkPolicy {
+  allowLoopback: boolean;
+  pendingLoopbackNavigation: boolean;
+}
+
 interface BrowserSession {
   id: string;
+  ownerClientId: string;
   workspaceId: string;
   browser: AnyBrowser;
   context: AnyContext;
   page: AnyPage;
   createdAt: number;
   lastUsedAt: number;
-  allowLoopback: boolean;
+  networkPolicy: BrowserNetworkPolicy;
   blockedRequests: string[];
   consoleLogs: ConsoleEntry[];
   network: NetworkEntry[];
 }
 
-const sessions = new Map<string, BrowserSession>();
+const sessions = new OwnedBrowserSessionRegistry<BrowserSession>();
 
 function textResult(payload: unknown, isError = false): ToolResponse {
   return {
@@ -72,24 +80,71 @@ function inlineScreenshot(buffer: Buffer, label: string): ToolResponse["content"
 }
 
 async function destroySession(sessionId: string): Promise<void> {
-  const session = sessions.get(sessionId);
+  const session = sessions.getInternal(sessionId);
   if (!session) return;
-  sessions.delete(sessionId);
   await settleWithin(() => session.context.close(), CLOSE_CTX_MS);
-  await closeBrowserWithDeadline(session.browser, CLOSE_BR_MS);
+  const browserResult = await closeBrowserWithDeadline(session.browser, CLOSE_BR_MS);
+  if (!browserResult.closed && !browserResult.forceKilled) {
+    throw new Error(`Browser session ${sessionId} could not be closed or force-killed.`);
+  }
+  sessions.deleteInternal(sessionId);
+}
+
+export async function closeBrowserSessionsForWorkspace(workspaceId: string): Promise<number> {
+  const sessionIds = Array.from(sessions.values())
+    .filter((session) => session.workspaceId === workspaceId)
+    .map((session) => session.id);
+  const results = await Promise.allSettled(sessionIds.map((sessionId) => destroySession(sessionId)));
+  const failed = results.filter((result) => result.status === "rejected");
+  if (failed.length > 0) {
+    throw new AggregateError(
+      failed.map((result) => (result as PromiseRejectedResult).reason),
+      `Failed to close ${failed.length} browser session(s) for workspace ${workspaceId}.`,
+    );
+  }
+  return sessionIds.length;
+}
+
+export async function closeAllBrowserSessions(): Promise<number> {
+  const sessionIds = Array.from(sessions.values(), (session) => session.id);
+  const results = await Promise.allSettled(sessionIds.map((sessionId) => destroySession(sessionId)));
+  const failed = results.filter((result) => result.status === "rejected");
+  if (failed.length > 0) {
+    throw new AggregateError(
+      failed.map((result) => (result as PromiseRejectedResult).reason),
+      `Failed to close ${failed.length} browser session(s) during shutdown.`,
+    );
+  }
+  return sessionIds.length;
+}
+
+export function activeBrowserSessionCount(workspaceId?: string): number {
+  if (!workspaceId) return sessions.size;
+  return Array.from(sessions.values()).filter((session) => session.workspaceId === workspaceId).length;
 }
 
 function pruneExpiredSessions(): void {
   const now = Date.now();
-  for (const [id, session] of sessions) {
-    if (now - session.lastUsedAt > SESSION_TTL_MS) void destroySession(id);
+  for (const session of sessions.values()) {
+    if (now - session.lastUsedAt > SESSION_TTL_MS) {
+      void destroySession(session.id).catch(() => {
+        // Keep the session registered so a later prune/close can retry cleanup.
+      });
+    }
   }
+}
+
+function requireBrowserOwner(): string {
+  const ownerClientId = getRequestContext()?.ownerClientId;
+  if (!ownerClientId) {
+    throw new Error("Forbidden: browser sessions require an authenticated OAuth client context");
+  }
+  return ownerClientId;
 }
 
 function getSession(sessionId: string): BrowserSession {
   pruneExpiredSessions();
-  const session = sessions.get(sessionId);
-  if (!session) throw new Error(`Unknown browser session: ${sessionId}. Open one with browser_open first.`);
+  const session = sessions.getOwned(sessionId, requireBrowserOwner());
   session.lastUsedAt = Date.now();
   return session;
 }
@@ -99,11 +154,26 @@ function isLocalHost(hostname: string): boolean {
   return host === "localhost" || host.endsWith(".localhost") || host === "0.0.0.0" || host === "::1" || host.startsWith("127.");
 }
 
+export function browserSessionAllowsLoopbackForUrl(url: string | undefined): boolean {
+  if (!url) return false;
+  try {
+    return isLocalHost(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isTopLevelNavigationRequest(request: any): boolean {
+  if (request.isNavigationRequest?.() !== true) return false;
+  const frame = request.frame?.();
+  return frame ? frame.parentFrame?.() == null : false;
+}
+
 async function installGuard(
   context: AnyContext,
   initialUrl: string | undefined,
   blocked: string[],
-  allowLoopback: boolean,
+  policy: BrowserNetworkPolicy,
 ): Promise<string | undefined> {
   await context.route("**/*", async (route: any) => {
     const requestUrl = route.request().url();
@@ -113,6 +183,8 @@ async function installGuard(
         await route.continue();
         return;
       }
+      const allowLoopback = policy.allowLoopback
+        || (policy.pendingLoopbackNavigation && isTopLevelNavigationRequest(route.request()));
       await assertSafeWebUrl(requestUrl, allowLoopback);
       await route.continue();
     } catch (error) {
@@ -125,7 +197,7 @@ async function installGuard(
   await context.routeWebSocket("**/*", async (ws: any) => {
     const socketUrl = ws.url();
     try {
-      await assertSafeWebUrl(socketUrl.replace(/^ws/, "http"), allowLoopback);
+      await assertSafeWebUrl(socketUrl.replace(/^ws/, "http"), policy.allowLoopback);
       ws.connectToServer();
     } catch (error) {
       if (blocked.length < MAX_DIAGNOSTICS) {
@@ -135,7 +207,15 @@ async function installGuard(
     }
   });
   if (!initialUrl) return undefined;
-  return assertSafeWebUrl(initialUrl, allowLoopback);
+  return assertSafeWebUrl(initialUrl, browserSessionAllowsLoopbackForUrl(initialUrl));
+}
+
+function trackCommittedTopLevelUrl(page: AnyPage, policy: BrowserNetworkPolicy): void {
+  page.on("framenavigated", (frame: any) => {
+    if (frame !== page.mainFrame?.()) return;
+    const url = frame.url?.();
+    policy.allowLoopback = browserSessionAllowsLoopbackForUrl(typeof url === "string" ? url : undefined);
+  });
 }
 
 function attachDiagnostics(session: BrowserSession): void {
@@ -174,6 +254,7 @@ export async function browserOpen(
     userAgent?: string;
   },
 ): Promise<ToolResponse> {
+  const ownerClientId = requireBrowserOwner();
   registry.getWorkspace(input.workspaceId);
   pruneExpiredSessions();
   if (sessions.size >= MAX_SESSIONS) {
@@ -191,7 +272,10 @@ export async function browserOpen(
   let context: AnyContext | undefined;
   try {
     const validated = input.url ? validateWebUrl(input.url) : undefined;
-    const allowLoopback = validated ? isLocalHost(new URL(validated).hostname) : true;
+    const networkPolicy: BrowserNetworkPolicy = {
+      allowLoopback: false,
+      pendingLoopbackNavigation: browserSessionAllowsLoopbackForUrl(validated),
+    };
     browser = await playwright.chromium.launch(LAUNCH_OPTIONS);
     context = await browser!.newContext({
       viewport: { width, height },
@@ -199,24 +283,30 @@ export async function browserOpen(
       ...(input.userAgent ? { userAgent: input.userAgent } : {}),
     });
     const blockedRequests: string[] = [];
-    const safeUrl = await installGuard(context, validated, blockedRequests, allowLoopback);
+    const safeUrl = await installGuard(context, validated, blockedRequests, networkPolicy);
     const page = await context.newPage();
+    trackCommittedTopLevelUrl(page, networkPolicy);
     const session: BrowserSession = {
       id: randomUUID(),
+      ownerClientId,
       workspaceId: input.workspaceId,
       browser: browser!,
       context,
       page,
       createdAt: Date.now(),
       lastUsedAt: Date.now(),
-      allowLoopback,
+      networkPolicy,
       blockedRequests,
       consoleLogs: [],
       network: [],
     };
     attachDiagnostics(session);
-    if (safeUrl) await page.goto(safeUrl, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT_MS });
-    sessions.set(session.id, session);
+    try {
+      if (safeUrl) await page.goto(safeUrl, { waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT_MS });
+    } finally {
+      networkPolicy.pendingLoopbackNavigation = false;
+    }
+    sessions.add(session);
     return textResult({
       sessionId: session.id,
       url: page.url(),
@@ -232,7 +322,8 @@ export async function browserOpen(
 }
 
 export async function browserClose(input: { sessionId: string }): Promise<ToolResponse> {
-  if (!sessions.has(input.sessionId)) {
+  const ownerClientId = requireBrowserOwner();
+  if (!sessions.hasOwned(input.sessionId, ownerClientId)) {
     return textResult({ closed: false, reason: "Session not found or already closed." });
   }
   await destroySession(input.sessionId);
@@ -241,8 +332,8 @@ export async function browserClose(input: { sessionId: string }): Promise<ToolRe
 
 export async function browserListSessions(input: { workspaceId?: string }): Promise<ToolResponse> {
   pruneExpiredSessions();
-  const items = Array.from(sessions.values())
-    .filter((s) => !input.workspaceId || s.workspaceId === input.workspaceId)
+  const ownerClientId = requireBrowserOwner();
+  const items = sessions.listOwned(ownerClientId, input.workspaceId)
     .map((s) => ({
       sessionId: s.id,
       workspaceId: s.workspaceId,
@@ -260,11 +351,22 @@ export async function browserNavigate(input: {
 }): Promise<ToolResponse> {
   try {
     const session = getSession(input.sessionId);
-    const safeUrl = await assertSafeWebUrl(input.url, session.allowLoopback);
-    await session.page.goto(safeUrl, {
-      waitUntil: input.waitUntil ?? "domcontentloaded",
-      timeout: DEFAULT_TIMEOUT_MS,
-    });
+    const targetAllowsLoopback = browserSessionAllowsLoopbackForUrl(input.url);
+    const safeUrl = await assertSafeWebUrl(input.url, targetAllowsLoopback);
+    session.networkPolicy.allowLoopback = false;
+    session.networkPolicy.pendingLoopbackNavigation = targetAllowsLoopback;
+    try {
+      await session.page.goto(safeUrl, {
+        waitUntil: input.waitUntil ?? "domcontentloaded",
+        timeout: DEFAULT_TIMEOUT_MS,
+      });
+      session.networkPolicy.allowLoopback = browserSessionAllowsLoopbackForUrl(session.page.url());
+    } catch (error) {
+      session.networkPolicy.allowLoopback = browserSessionAllowsLoopbackForUrl(session.page.url());
+      throw error;
+    } finally {
+      session.networkPolicy.pendingLoopbackNavigation = false;
+    }
     return textResult({ sessionId: session.id, url: session.page.url(), title: await session.page.title() });
   } catch (error) {
     return textResult(`browser_navigate failed: ${error instanceof Error ? error.message : String(error)}`, true);
@@ -284,7 +386,13 @@ export async function browserReload(input: { sessionId: string }): Promise<ToolR
 export async function browserGoBack(input: { sessionId: string }): Promise<ToolResponse> {
   try {
     const session = getSession(input.sessionId);
-    await session.page.goBack({ waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT_MS });
+    session.networkPolicy.allowLoopback = false;
+    session.networkPolicy.pendingLoopbackNavigation = false;
+    try {
+      await session.page.goBack({ waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT_MS });
+    } finally {
+      session.networkPolicy.allowLoopback = browserSessionAllowsLoopbackForUrl(session.page.url());
+    }
     return textResult({ sessionId: session.id, url: session.page.url(), title: await session.page.title() });
   } catch (error) {
     return textResult(`browser_go_back failed: ${error instanceof Error ? error.message : String(error)}`, true);
@@ -294,7 +402,13 @@ export async function browserGoBack(input: { sessionId: string }): Promise<ToolR
 export async function browserGoForward(input: { sessionId: string }): Promise<ToolResponse> {
   try {
     const session = getSession(input.sessionId);
-    await session.page.goForward({ waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT_MS });
+    session.networkPolicy.allowLoopback = false;
+    session.networkPolicy.pendingLoopbackNavigation = false;
+    try {
+      await session.page.goForward({ waitUntil: "domcontentloaded", timeout: DEFAULT_TIMEOUT_MS });
+    } finally {
+      session.networkPolicy.allowLoopback = browserSessionAllowsLoopbackForUrl(session.page.url());
+    }
     return textResult({ sessionId: session.id, url: session.page.url(), title: await session.page.title() });
   } catch (error) {
     return textResult(`browser_go_forward failed: ${error instanceof Error ? error.message : String(error)}`, true);

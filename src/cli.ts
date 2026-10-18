@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { parseStartRequest } from "./background-lifecycle.js";
 import { runServeCommand } from "./cli/commands/serve-command.js";
 import { runTunnelCommand } from "./cli/commands/tunnel-command.js";
+import { runCloudflareCommand } from "./cli/commands/cloudflare-command.js";
 import { printHelp } from "./cli/commands/help-command.js";
 import {
   runConfigCommand,
@@ -43,6 +44,7 @@ type Command =
   | "stop"
   | "restart"
   | "tunnel"
+  | "cloudflare"
   | "help";
 
 async function main(argv: string[]): Promise<void> {
@@ -105,10 +107,16 @@ async function main(argv: string[]): Promise<void> {
         restart: lifecycle.restart,
       });
       return;
+    case "cloudflare":
+      await runCloudflareCommand(args);
+      return;
     case "restart": {
       const hard = args[0]?.toLowerCase() === "hard";
       const restartRequest = parseStartRequest(hard ? args.slice(1) : args);
-      const launchRoot = setDirectoryScopedRoot();
+      // Restart must reload the persisted allowed-root list. Directory-scoping
+      // belongs to `change`; applying it here would silently hide additional
+      // dashboard-managed directories after every restart.
+      const launchRoot = resolve(process.cwd());
       await ensureConfigured({ directoryScoped: true });
       await lifecycle.restart(restartRequest, launchRoot, hard);
       return;
@@ -141,6 +149,7 @@ function normalizeCommand(command: string | undefined): Command {
     || command === "stop"
     || command === "restart"
     || command === "tunnel"
+    || command === "cloudflare"
   ) {
     return command;
   }

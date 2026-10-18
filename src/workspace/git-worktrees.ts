@@ -35,6 +35,66 @@ export interface ManagedWorktree {
   managed: boolean;
 }
 
+export interface ManagedWorktreeCleanupResult {
+  removed: boolean;
+  preserved: boolean;
+  path: string;
+  reason?: string;
+}
+
+export async function cleanupManagedWorktree(input: {
+  worktree: ManagedWorktree;
+  config: ServerConfig;
+}): Promise<ManagedWorktreeCleanupResult> {
+  const path = assertAllowedPath(input.worktree.path, [input.config.worktreeRoot]);
+  const sourceRoot = assertAllowedPath(input.worktree.sourceRoot, input.config.allowedRoots);
+  try {
+    const info = await stat(path);
+    if (!info.isDirectory()) {
+      return { removed: true, preserved: false, path, reason: "managed worktree path no longer exists as a directory" };
+    }
+  } catch {
+    return { removed: true, preserved: false, path, reason: "managed worktree path no longer exists" };
+  }
+
+  try {
+    const status = await git([
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all",
+      "--ignored=matching",
+    ], path);
+    if (status.trim().length > 0) {
+      return {
+        removed: false,
+        preserved: true,
+        path,
+        reason: "managed worktree contains modified, untracked, or ignored files",
+      };
+    }
+  } catch (error) {
+    return {
+      removed: false,
+      preserved: true,
+      path,
+      reason: `unable to verify managed worktree cleanliness: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  try {
+    await git(["worktree", "remove", path], sourceRoot);
+    await git(["worktree", "prune"], sourceRoot);
+    return { removed: true, preserved: false, path };
+  } catch (error) {
+    return {
+      removed: false,
+      preserved: true,
+      path,
+      reason: `Git could not remove the clean managed worktree: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
 export async function createManagedWorktree(input: {
   sourcePath: string;
   baseRef?: string;

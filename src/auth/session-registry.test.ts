@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import {
   DEFAULT_DISCONNECT_GRACE_MS,
+  DEFAULT_MAX_SESSIONS,
+  DEFAULT_MAX_SESSIONS_PER_OWNER,
   DEFAULT_SESSION_IDLE_TIMEOUT_MS,
   HARD_MAX_SESSIONS,
   SessionRegistry,
@@ -17,7 +19,9 @@ const loggingConfig = {
   shellCommands: false,
 };
 const config = { logging: loggingConfig };
-assert.equal(HARD_MAX_SESSIONS, 99999, "the MCP server must never allow more than 99999 sessions");
+assert.equal(HARD_MAX_SESSIONS, 256, "the MCP server must never allow more than 256 sessions");
+assert.equal(DEFAULT_MAX_SESSIONS, 32, "the global default should be conservative for a local server");
+assert.equal(DEFAULT_MAX_SESSIONS_PER_OWNER, 8, "the per-client default should be lower than the global default");
 assert.equal(DEFAULT_SESSION_IDLE_TIMEOUT_MS, 12 * 60 * 60 * 1000, "idle sessions should remain available for 12 hours");
 assert.equal(DEFAULT_DISCONNECT_GRACE_MS, 0, "idle cleanup should not add a grace period");
 
@@ -201,42 +205,19 @@ function createSession(
 }
 
 {
-  let now = 0;
-  const closed = { value: 0 };
   const registry = new SessionRegistry(config, {
-    now: () => now,
-    maxSessions: HARD_MAX_SESSIONS,
-    maxSessionsPerOwner: HARD_MAX_SESSIONS,
+    maxSessions: 4,
+    maxSessionsPerOwner: 2,
     startCleanupTimer: false,
   });
-  const sessions = Array.from({ length: 3 }, () => {
-    const session = createSession(registry, "client1", closed);
-    registry.transition(session.sessionId, "active");
-    assert.equal(registry.beginRequest(session.sessionId), true);
-    return session;
-  });
-
-  now = 60_000;
-  const remainingReservations = Array.from(
-    { length: HARD_MAX_SESSIONS - sessions.length },
-    () => registry.reserve("client1"),
-  );
-  assert.ok(remainingReservations.every((reservation) => reservation !== undefined));
-  assert.equal(
-    registry.reserve("client1"),
-    undefined,
-    "the 1000th slot must be rejected at the hard maximum of 999",
-  );
-  assert.equal(closed.value, 0);
-  assert.ok(sessions.every((session) => registry.get(session.sessionId)?.state === "active"));
-  assert.equal(registry.occupiedCount(), HARD_MAX_SESSIONS);
-
-  await Promise.all(sessions.map(async (session, index) => {
-    await new Promise((resolve) => setTimeout(resolve, index % 3));
-    registry.endRequest(session.sessionId);
-  }));
-  assert.ok(sessions.every((session) => registry.get(session.sessionId)?.inFlightRequests === 0));
-  for (const reservation of remainingReservations) registry.release(reservation);
+  const clientOne = createSession(registry, "client1");
+  const clientTwo = createSession(registry, "client1");
+  assert.ok(clientOne);
+  assert.ok(clientTwo);
+  assert.equal(registry.reserve("client1"), undefined, "per-client capacity must be enforced");
+  assert.ok(createSession(registry, "client2"));
+  assert.ok(createSession(registry, "client2"));
+  assert.equal(registry.reserve("client3"), undefined, "global capacity must be enforced");
   registry.close();
 }
 
@@ -352,6 +333,11 @@ function createSession(
   registry.bindWorkspace(session.sessionId, "myroom", "workspace1");
   assert.equal(registry.get(session.sessionId)?.roomId, "myroom");
   assert.equal(registry.get(session.sessionId)?.workspaceId, "workspace1");
+  assert.equal(registry.unbindWorkspace(session.sessionId, "other-workspace"), false);
+  assert.equal(registry.unbindWorkspaceEverywhere("workspace1"), 1);
+  assert.equal(registry.get(session.sessionId)?.roomId, undefined);
+  assert.equal(registry.get(session.sessionId)?.workspaceId, undefined);
+  registry.bindWorkspace(session.sessionId, "myroom", "workspace1");
   registry.transition(session.sessionId, "disconnected");
   assert.equal(registry.activeCount(), 1, "disconnected grace records still occupy the registry");
   assert.equal(registry.connectedCount(), 0, "disconnected grace records must not appear as connected agents");

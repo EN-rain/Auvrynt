@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
+import { isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
+import { assertAllowedPath } from "../../workspace/roots.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Tool, ListToolsResult } from "@modelcontextprotocol/sdk/types.js";
@@ -35,7 +37,6 @@ export interface SerenaSession {
   sessionId: string;
   workspaceId: string;
   projectRoot: string;
-  projectRelativePath?: string;
   processPid: number | null;
   mcpInitialized: boolean;
   activatedProject: string | null;
@@ -72,9 +73,7 @@ const READ_ONLY_TOOLS = new Set([
   "find_implementations",
   "find_declaration",
   "get_diagnostics_for_file",
-  "get_diagnostics_for_symbol",
   "search_for_pattern",
-  "serena_info",
   "get_current_config",
   "onboarding",
   "initial_instructions",
@@ -216,20 +215,181 @@ function validatePath(
   workspaceRoot: string,
   candidatePath: string,
 ): string | null {
-  const normalized = candidatePath.replace(/\\/g, "/");
-  const root = workspaceRoot.replace(/\\/g, "/");
+  try {
+    const absolute = isAbsolute(candidatePath)
+      ? candidatePath
+      : resolve(workspaceRoot, candidatePath);
+    return assertAllowedPath(absolute, [workspaceRoot]);
+  } catch {
+    return null;
+  }
+}
 
-  if (normalized.startsWith("..")) return null;
-  if (normalized.startsWith("/")) return null;
-  if (/^[A-Za-z]:[/]/.test(normalized) && !normalized.startsWith(root)) return null;
+function validateRelativePath(
+  workspaceRoot: string,
+  candidatePath: string,
+): string | null {
+  const absolute = validatePath(workspaceRoot, candidatePath);
+  if (!absolute) return null;
+  try {
+    const canonicalRoot = assertAllowedPath(workspaceRoot, [workspaceRoot]);
+    const result = relative(canonicalRoot, absolute).replace(/\\/g, "/");
+    if (result === "") return ".";
+    if (result === ".." || result.startsWith("../") || isAbsolute(result)) return null;
+    return result;
+  } catch {
+    return null;
+  }
+}
 
-  const absolute = normalized.startsWith(root)
-    ? normalized
-    : `${root}/${normalized}`;
+function compactArgs(entries: Array<[string, unknown]>): Record<string, unknown> {
+  return Object.fromEntries(entries.filter(([, value]) => value !== undefined));
+}
 
-  if (!absolute.startsWith(root + "/") && absolute !== root) return null;
+export async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
-  return absolute;
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return Boolean(
+      typeof error === "object"
+      && error
+      && "code" in error
+      && (error as { code?: unknown }).code === "EPERM",
+    );
+  }
+}
+
+async function terminateOwnedProcess(pid: number): Promise<boolean> {
+  if (!isProcessAlive(pid)) return true;
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    // The process may have exited between the liveness check and signal.
+  }
+  for (let attempt = 0; attempt < 10 && isProcessAlive(pid); attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  if (!isProcessAlive(pid)) return true;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Re-check below; ESRCH is success, permission errors remain failures.
+  }
+  for (let attempt = 0; attempt < 20 && isProcessAlive(pid); attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return !isProcessAlive(pid);
+}
+
+export function adaptSerenaToolArguments(
+  serenaToolName: string,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  switch (serenaToolName) {
+    case "find_symbol":
+      return compactArgs([
+        ["name_path_pattern", args.query],
+        ["relative_path", args.filePath],
+        ["include_body", args.includeBody],
+        ["include_info", args.includeInfo],
+        ["max_matches", args.maxResults],
+      ]);
+    case "find_referencing_symbols":
+      return compactArgs([
+        ["name_path", args.query],
+        ["relative_path", args.filePath],
+        ["max_answer_chars", args.maxChars],
+      ]);
+    case "get_symbols_overview":
+      return compactArgs([
+        ["relative_path", args.filePath],
+        ["depth", args.depth],
+        ["max_answer_chars", args.maxChars],
+      ]);
+    case "search_for_pattern":
+      return compactArgs([
+        ["substring_pattern", args.pattern],
+        ["relative_path", args.path],
+        ["paths_include_glob", args.filePattern],
+        ["context_lines_before", args.contextLinesBefore],
+        ["context_lines_after", args.contextLinesAfter],
+        ["restrict_search_to_code_files", args.codeOnly],
+        ["max_answer_chars", args.maxChars],
+      ]);
+    case "find_implementations":
+      return compactArgs([
+        ["name_path", args.query],
+        ["relative_path", args.filePath],
+        ["include_info", args.includeInfo],
+        ["max_answer_chars", args.maxChars],
+      ]);
+    case "find_declaration":
+      return compactArgs([
+        ["relative_path", args.filePath],
+        ["regex", args.regex],
+        ["containing_symbol_name_path", args.containingSymbol],
+        ["include_body", args.includeBody],
+        ["include_info", args.includeInfo],
+      ]);
+    case "get_diagnostics_for_file":
+      return compactArgs([
+        ["relative_path", args.filePath],
+        ["start_line", args.startLine],
+        ["end_line", args.endLine],
+        ["min_severity", args.minSeverity],
+        ["max_answer_chars", args.maxChars],
+      ]);
+    case "replace_symbol_body":
+      return compactArgs([
+        ["name_path", args.symbol],
+        ["relative_path", args.filePath],
+        ["body", args.newBody],
+      ]);
+    case "insert_before_symbol":
+    case "insert_after_symbol":
+      return compactArgs([
+        ["name_path", args.symbol],
+        ["relative_path", args.filePath],
+        ["body", args.content],
+      ]);
+    case "rename_symbol":
+      return compactArgs([
+        ["name_path", args.symbol],
+        ["relative_path", args.filePath],
+        ["new_name", args.newName],
+      ]);
+    case "safe_delete_symbol":
+      return compactArgs([
+        ["name_path_pattern", args.symbol],
+        ["relative_path", args.filePath],
+      ]);
+    case "read_memory":
+      return compactArgs([["memory_name", args.name]]);
+    case "list_memories":
+      return compactArgs([["topic", args.topic]]);
+    default:
+      return { ...args };
+  }
 }
 
 function buildTransportArgs(config: SerenaConfig, projectRoot?: string): string[] {
@@ -304,18 +464,16 @@ export class SerenaManager {
   async startSession(
     workspaceId: string,
     projectRoot: string,
-    projectRelativePath?: string,
   ): Promise<SerenaSession> {
     return this.runWorkspaceOperation(
       workspaceId,
-      () => this.startSessionUnlocked(workspaceId, projectRoot, projectRelativePath),
+      () => this.startSessionUnlocked(workspaceId, projectRoot),
     );
   }
 
   private async startSessionUnlocked(
     workspaceId: string,
     projectRoot: string,
-    projectRelativePath?: string,
   ): Promise<SerenaSession> {
     const env = await this.getEnvironment();
     if (!env.installed) {
@@ -326,15 +484,6 @@ export class SerenaManager {
 
     if (!this.config.enabled) {
       throw new Error("Serena is disabled in Auvrynt configuration.");
-    }
-
-    const activeCount = Array.from(this.sessions.values()).filter(
-      (s) => s.status === "active" || s.status === "starting",
-    ).length;
-    if (activeCount >= this.config.maxInstances) {
-      throw new Error(
-        `Maximum Serena instances reached (${this.config.maxInstances}). Stop an existing session first.`,
-      );
     }
 
     for (const session of this.sessions.values()) {
@@ -350,12 +499,17 @@ export class SerenaManager {
       }
     }
 
-    const resolvedRoot = projectRelativePath
-      ? projectRelativePath
-      : projectRoot;
+    const activeCount = Array.from(this.sessions.values()).filter(
+      (s) => s.status === "active" || s.status === "starting",
+    ).length;
+    if (activeCount >= this.config.maxInstances) {
+      throw new Error(
+        `Maximum Serena instances reached (${this.config.maxInstances}). Stop an existing session first.`,
+      );
+    }
 
     const sessionId = `serena_${randomUUID()}`;
-    const args = buildTransportArgs(this.config, resolvedRoot);
+    const args = buildTransportArgs(this.config, projectRoot);
     const transport = new StdioClientTransport({
       command: this.config.executable,
       args,
@@ -371,7 +525,6 @@ export class SerenaManager {
       sessionId,
       workspaceId,
       projectRoot,
-      projectRelativePath,
       processPid: null,
       mcpInitialized: false,
       activatedProject: null,
@@ -386,22 +539,33 @@ export class SerenaManager {
     this.sessions.set(sessionId, session);
 
     try {
-      const connectPromise = client.connect(transport);
-      await connectPromise;
+      await withTimeout(
+        client.connect(transport),
+        this.config.startupTimeoutMs,
+        `Serena MCP startup timed out after ${this.config.startupTimeoutMs} ms.`,
+      );
 
       session.processPid = transport.pid;
       session.mcpInitialized = true;
 
-      const toolsResult = await client.listTools();
+      const toolsResult = await withTimeout(
+        client.listTools(),
+        this.config.startupTimeoutMs,
+        `Serena tool discovery timed out after ${this.config.startupTimeoutMs} ms.`,
+      );
       const allTools = toolsResult.tools ?? [];
       session.exposedTools = allTools.map((t) => t.name);
 
       if (allTools.length > 0) {
         try {
-          const activateResult = await client.callTool({
-            name: "activate_project",
-            arguments: { path: projectRoot },
-          });
+          await client.callTool(
+            {
+              name: "activate_project",
+              arguments: { path: projectRoot },
+            },
+            undefined,
+            { timeout: this.config.startupTimeoutMs },
+          );
           session.activatedProject = projectRoot;
         } catch {
           session.activatedProject = null;
@@ -417,8 +581,13 @@ export class SerenaManager {
     } catch (err) {
       session.status = "error";
       session.lastError = err instanceof Error ? err.message : String(err);
-      await this.cleanupSession(session);
-      this.sessions.delete(sessionId);
+      try {
+        await this.cleanupSession(session);
+        this.sessions.delete(sessionId);
+      } catch (cleanupError) {
+        const cleanupMessage = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+        session.lastError = `${session.lastError} Cleanup failed: ${cleanupMessage}`;
+      }
       throw new Error(
         `Failed to start Serena session: ${session.lastError}`,
       );
@@ -449,11 +618,17 @@ export class SerenaManager {
     if (!session) return;
 
     session.status = "stopped";
-    await this.cleanupSession(session);
-    this.sessions.delete(sessionId);
-
-    if (this.sessions.size === 0) {
-      this.stopIdleTimer();
+    try {
+      await this.cleanupSession(session);
+      this.sessions.delete(sessionId);
+    } catch (error) {
+      session.status = "error";
+      session.lastError = error instanceof Error ? error.message : String(error);
+      throw error;
+    } finally {
+      if (this.sessions.size === 0) {
+        this.stopIdleTimer();
+      }
     }
   }
 
@@ -464,12 +639,24 @@ export class SerenaManager {
         toStop.push(id);
       }
     }
-    await Promise.all(toStop.map((id) => this.stopSession(id)));
+    const results = await Promise.allSettled(toStop.map((id) => this.stopSession(id)));
+    const failures = results
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) => result.reason);
+    if (failures.length > 0) {
+      throw new AggregateError(failures, `Failed to stop ${failures.length} Serena session(s) for workspace ${workspaceId}.`);
+    }
   }
 
   async stopAllSessions(): Promise<void> {
     const ids = Array.from(this.sessions.keys());
-    await Promise.all(ids.map((id) => this.stopSession(id)));
+    const results = await Promise.allSettled(ids.map((id) => this.stopSession(id)));
+    const failures = results
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) => result.reason);
+    if (failures.length > 0) {
+      throw new AggregateError(failures, `Failed to stop ${failures.length} Serena session(s).`);
+    }
   }
 
   async healthCheck(workspaceId: string): Promise<{
@@ -494,7 +681,11 @@ export class SerenaManager {
 
     try {
       const start = Date.now();
-      await session.client.ping();
+      await withTimeout(
+        session.client.ping(),
+        this.config.requestTimeoutMs,
+        `Serena health check timed out after ${this.config.requestTimeoutMs} ms.`,
+      );
       const latencyMs = Date.now() - start;
 
       return {
@@ -536,26 +727,36 @@ export class SerenaManager {
       );
     }
 
-    const validatedArgs = { ...args };
+    const validatedArgs = adaptSerenaToolArguments(serenaToolName, args);
 
-    if (args.path && typeof args.path === "string") {
-      const validated = validatePath(workspaceRoot, args.path);
+    if (validatedArgs.path && typeof validatedArgs.path === "string") {
+      const validated = validatePath(workspaceRoot, validatedArgs.path);
       if (!validated) {
         throw new Error(
-          `Path "${args.path}" is outside the workspace root or invalid.`,
+          `Path "${validatedArgs.path}" is outside the workspace root or invalid.`,
         );
       }
       validatedArgs.path = validated;
     }
 
-    if (args.file_path && typeof args.file_path === "string") {
-      const validated = validatePath(workspaceRoot, args.file_path);
+    if (validatedArgs.file_path && typeof validatedArgs.file_path === "string") {
+      const validated = validatePath(workspaceRoot, validatedArgs.file_path);
       if (!validated) {
         throw new Error(
-          `Path "${args.file_path}" is outside the workspace root or invalid.`,
+          `Path "${validatedArgs.file_path}" is outside the workspace root or invalid.`,
         );
       }
       validatedArgs.file_path = validated;
+    }
+
+    if (validatedArgs.relative_path && typeof validatedArgs.relative_path === "string") {
+      const validated = validateRelativePath(workspaceRoot, validatedArgs.relative_path);
+      if (!validated) {
+        throw new Error(
+          `Path "${validatedArgs.relative_path}" is outside the workspace root or invalid.`,
+        );
+      }
+      validatedArgs.relative_path = validated;
     }
 
     const timeout = this.config.requestTimeoutMs;
@@ -616,6 +817,12 @@ export class SerenaManager {
       Promise.resolve().then(() => session.client.close()),
       Promise.resolve().then(() => session.transport.close()),
     ]);
+    const pid = session.processPid;
+    if (!pid) return;
+    if (!(await terminateOwnedProcess(pid))) {
+      throw new Error(`Serena child process ${pid} remained alive after client/transport shutdown and forced termination.`);
+    }
+    session.processPid = null;
   }
 
   private startIdleTimer(): void {

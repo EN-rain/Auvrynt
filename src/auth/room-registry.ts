@@ -125,6 +125,13 @@ export class RoomRegistry {
     this.close(record.roomId);
   }
 
+  closeWorkspace(workspaceId: string): boolean {
+    const record = this.getByWorkspace(workspaceId);
+    if (!record) return false;
+    this.close(record.roomId);
+    return true;
+  }
+
   close(roomId: string): void {
     const record = this.rooms.get(roomId);
     if (record) {

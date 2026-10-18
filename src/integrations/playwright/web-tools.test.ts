@@ -4,6 +4,7 @@ import { join } from "node:path";
 import assert from "node:assert/strict";
 import { loadConfig } from "../../infrastructure/config.js";
 import { WorkspaceRegistry } from "../../workspace/workspaces.js";
+import { browserSessionAllowsLoopbackForUrl } from "./browser-session.js";
 import { assertSafeWebUrl, validateWebUrl } from "./web-tools.js";
 
 const root = await mkdtemp(join(tmpdir(), "auvrynt-web-test-"));
@@ -42,6 +43,13 @@ try {
     "http://127.0.0.1:3000/",
   );
   await assert.rejects(() => assertSafeWebUrl("http://169.254.169.254/", true), /non-public/i);
+
+  // 5. Persistent browser sessions do not inherit loopback access just because they start blank.
+  assert.equal(browserSessionAllowsLoopbackForUrl(undefined), false);
+  assert.equal(browserSessionAllowsLoopbackForUrl("about:blank"), false);
+  assert.equal(browserSessionAllowsLoopbackForUrl("https://example.com/"), false);
+  assert.equal(browserSessionAllowsLoopbackForUrl("http://127.0.0.1:3000/"), true);
+  assert.equal(browserSessionAllowsLoopbackForUrl("http://localhost:5173/"), true);
 } finally {
   await rm(root, { recursive: true, force: true });
 }

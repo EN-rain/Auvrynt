@@ -33,12 +33,17 @@ type ToolWidgetKind =
 function shouldAttachWidget(mode: WidgetMode, kind: ToolWidgetKind): boolean {
   switch (mode) {
     case "off":
+    case "compact":
       return false;
     case "changes":
-      return kind === "workspace" || kind === "show_changes";
+      return kind === "show_changes";
     case "full":
       return true;
   }
+}
+
+function shouldAttachInvocationText(mode: WidgetMode): boolean {
+  return mode !== "off";
 }
 
 const TOOL_INVOCATION_COPY: Record<ToolWidgetKind, { invoking: string; invoked: string }> = {
@@ -55,19 +60,23 @@ const TOOL_INVOCATION_COPY: Record<ToolWidgetKind, { invoking: string; invoked: 
 export function toolWidgetDescriptorMeta(config: ServerConfig, kind: ToolWidgetKind): {
   _meta: Record<string, unknown>;
 } {
-  if (!shouldAttachWidget(config.widgets, kind)) return { _meta: {} };
+  if (!shouldAttachInvocationText(config.widgets)) return { _meta: {} };
+
   const invocation = TOOL_INVOCATION_COPY[kind];
-  return {
-    _meta: {
-      ui: {
-        resourceUri: WORKSPACE_APP_URI,
-        visibility: ["model", "app"],
-      },
-      "openai/outputTemplate": WORKSPACE_APP_URI,
-      "openai/toolInvocation/invoking": invocation.invoking,
-      "openai/toolInvocation/invoked": invocation.invoked,
-    },
+  const meta: Record<string, unknown> = {
+    "openai/toolInvocation/invoking": invocation.invoking,
+    "openai/toolInvocation/invoked": invocation.invoked,
   };
+
+  if (shouldAttachWidget(config.widgets, kind)) {
+    meta.ui = {
+      resourceUri: WORKSPACE_APP_URI,
+      visibility: ["model", "app"],
+    };
+    meta["openai/outputTemplate"] = WORKSPACE_APP_URI;
+  }
+
+  return { _meta: meta };
 }
 
 export function resultOutputSchema(extra: z.ZodRawShape = {}): z.ZodRawShape {

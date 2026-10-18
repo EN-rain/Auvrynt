@@ -15,6 +15,7 @@ import {
 } from "../../pi-tools.js";
 import type { createReviewCheckpointManager } from "../../review-checkpoints.js";
 import { executeViewImage } from "../../view-image.js";
+import { MAX_TRANSFER_CHUNK_BYTES, writeFileTransferChunk } from "../../workspace/file-transfer.js";
 import type { WorkspaceRegistry } from "../../workspaces.js";
 import { registerAppTool } from "../mcp-tool-registrar.js";
 import { countTextLines, type WorkspaceChangeTracker } from "../workspace-analytics.js";
@@ -214,6 +215,60 @@ export function registerCoreFileTools(
       durationMs: Math.round(performance.now() - startedAt),
     });
     return response;
+  });
+
+  registerAppTool(server, "transfer_file", {
+    title: "Transfer binary file",
+    description: `Transfer binary bytes from the web client into a local workspace file. Use this for generated or attached images and other binary artifacts that cannot be sent through the text-only ${toolNames.write} tool. Send base64 or a base64 data URL. Each call accepts up to ${MAX_TRANSFER_CHUNK_BYTES} decoded bytes; for larger files, send sequential chunks using the returned nextOffset and set final=false until the last chunk.`,
+    inputSchema: {
+      workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
+      path: z.string().describe("Destination path relative to the workspace root."),
+      dataBase64: z.string().min(1).max(Math.ceil(MAX_TRANSFER_CHUNK_BYTES / 3) * 4 + 1024).describe("Raw base64 bytes or a data:<mime>;base64,... URL."),
+      mimeType: z.string().trim().min(1).max(128).optional().describe("Optional MIME type. Data URLs are accepted and validated against this value when both are supplied."),
+      offset: z.number().int().min(0).optional().describe("Byte offset for this chunk. Omit or use 0 for the first chunk; later chunks must equal the previous nextOffset."),
+      overwrite: z.boolean().optional().describe("Allow replacing an existing destination. Valid only for the first chunk; defaults to false."),
+      final: z.boolean().optional().describe("Defaults to true. Set false when more chunks will follow."),
+      expectedSha256: z.string().regex(/^[a-fA-F0-9]{64}$/).optional().describe("Optional expected SHA-256 for the completed file. Checked on the final chunk."),
+    },
+    outputSchema: resultOutputSchema({
+      path: z.string(),
+      bytesWritten: z.number().int().nonnegative(),
+      sizeBytes: z.number().int().nonnegative(),
+      nextOffset: z.number().int().nonnegative(),
+      final: z.boolean(),
+      sha256: z.string().optional(),
+      mimeType: z.string().optional(),
+    }),
+    ...toolWidgetDescriptorMeta(config, "write"), annotations: WRITE_TOOL_ANNOTATIONS,
+  }, async ({ workspaceId, path, ...input }) => {
+    const startedAt = performance.now();
+    const workspace = workspaces.getWorkspace(workspaceId);
+    const absolutePath = workspaces.resolvePath(workspace, path);
+    const result = await writeFileTransferChunk({ absolutePath, ...input });
+    workspaceChanges.recordMutation({
+      workspaceId,
+      workspaceRoot: workspace.root,
+      path,
+      kind: (input.offset ?? 0) === 0 && !input.overwrite ? "created" : "modified",
+      additions: 0,
+      removals: 0,
+    });
+    const summary = result.final
+      ? `Transferred ${result.sizeBytes} bytes to ${path}${result.sha256 ? ` (sha256 ${result.sha256})` : ""}.`
+      : `Transferred chunk to ${path}; ${result.sizeBytes} bytes received so far. Continue at offset ${result.nextOffset}.`;
+    const content = [textBlock(summary)];
+    logToolCall(config, {
+      tool: "transfer_file", workspaceId, path, success: true,
+      durationMs: Math.round(performance.now() - startedAt),
+    });
+    return {
+      content,
+      _meta: {
+        tool: "transfer_file",
+        card: { workspaceId, path, summary: result },
+      },
+      structuredContent: { result: summary, path, ...result },
+    };
   });
 
   registerAppTool(server, toolNames.write, {

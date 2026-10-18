@@ -6,6 +6,11 @@ import { disconnectAllGodotEditorBridges } from "../godot-editor-bridge.js";
 import { clearBlenderClients } from "../blender-client.js";
 import { logEvent } from "../logger.js";
 import type { ServerConfig } from "../config.js";
+import { closeAllBrowserSessions } from "../integrations/playwright/browser-session.js";
+import { stopAllDesktopStreams } from "../integrations/desktop/desktop-stream.js";
+import { stopAllDesktopIndicators } from "../integrations/desktop/desktop-indicator.js";
+import { clearAllDesktopControlState } from "../integrations/desktop/desktop-input.js";
+import { disconnectOpenPencil } from "../integrations/open-pencil/open-pencil-client.js";
 
 export type ShutdownPhase =
   | "none"
@@ -48,10 +53,18 @@ export function createShutdownCoordinator(
       sessionRegistry.close();
 
       log("Terminating processes...", "processes_terminated");
-      await Promise.allSettled([
+      const terminationResults = await Promise.allSettled([
         serenaManager.stopAllSessions(),
         processManager.stopAllProcesses(),
+        closeAllBrowserSessions(),
+        disconnectOpenPencil(),
       ]);
+      const terminationFailures = terminationResults
+        .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+        .map((result) => result.reason);
+      stopAllDesktopStreams();
+      stopAllDesktopIndicators();
+      clearAllDesktopControlState();
 
       log("Disconnecting integrations...", "integrations_disconnected");
       disconnectAllGodotEditorBridges();
@@ -59,6 +72,13 @@ export function createShutdownCoordinator(
 
       log("Closing database...", "database_closed");
       workspaceStore.close?.();
+
+      if (terminationFailures.length > 0) {
+        logEvent(config.logging, "error", "shutdown_cleanup_failed", {
+          failures: terminationFailures.map((error) => error instanceof Error ? error.message : String(error)),
+        });
+        throw new AggregateError(terminationFailures, "One or more resources failed to terminate during shutdown.");
+      }
 
         log("Shutdown complete", "database_closed");
       })();

@@ -65,8 +65,9 @@ Before modifying or inspecting files, identify the script language:
 
 | Requirement | Notes |
 |---|---|
-| **Godot 4.2+ with .NET** | Must be the `mono`/`.NET`-enabled build (e.g. `Godot_v4.x.x-stable_mono_win64`) |
-| **.NET SDK 8.0+** | Required for C# compilation |
+| **Godot 4.2+** | Required for all supported Godot projects |
+| **Godot .NET/mono build** | Required only when the active project/task uses C# |
+| **.NET SDK 8.0+** | Required only for C# compilation |
 | **Auvrynt server** | Running and connected to your AI client |
 | **Auvrynt workspace** | Opened via `open_workspace` pointing to your Godot project root |
 

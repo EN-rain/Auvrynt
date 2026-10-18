@@ -2,6 +2,8 @@ import { homedir } from "node:os";
 import { basename, dirname, relative, resolve, sep } from "node:path";
 import { existsSync, realpathSync } from "node:fs";
 
+export const MAX_ALLOWED_ROOTS = 5;
+
 export class AccessDeniedError extends Error {
   constructor(message: string) {
     super(message);

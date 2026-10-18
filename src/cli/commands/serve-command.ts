@@ -1,7 +1,9 @@
 import type { ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadConfig } from "../../config.js";
-import { parseStartRequest } from "../../background-lifecycle.js";
+import { parseStartRequest, resolveSavedWorkspaceRoot } from "../../background-lifecycle.js";
+import { loadAuvryntFiles } from "../../user-config.js";
 import { startTunnel } from "../../tunnels/tunnel-manager.js";
 import {
   applyIntegrationProfile,
@@ -19,13 +21,21 @@ export async function runServeCommand(
 ): Promise<void> {
   const startRequest = rawCommand === "start" ? parseStartRequest(args) : undefined;
   if (startRequest && !startRequest.backgroundChild) {
-    const launchRoot = setDirectoryScopedRoot();
     await ensureConfigured({ directoryScoped: true });
+    const files = loadAuvryntFiles();
+    const launchRoot = args.length === 0
+      ? requireSavedWorkspaceRoot(resolveStartLaunchRoot(args, files.config, process.cwd()))
+      : setDirectoryScopedRoot();
+    if (args.length === 0) setPersistedDirectoryScope(files.config.allowedRoots, launchRoot);
     await lifecycle.start(startRequest, launchRoot);
     return;
   }
 
-  if (rawCommand === "start") setDirectoryScopedRoot();
+  if (rawCommand === "start" && !process.env.AUVRYNT_ALLOWED_ROOTS) {
+    const files = loadAuvryntFiles();
+    const launchRoot = requireSavedWorkspaceRoot(resolveSavedWorkspaceRoot(files.config, process.cwd()));
+    setPersistedDirectoryScope(files.config.allowedRoots, launchRoot);
+  }
   await ensureConfigured({ directoryScoped: rawCommand === "start" });
   if (startRequest?.profiles) applyIntegrationProfile(startRequest.profiles);
 
@@ -52,10 +62,11 @@ export async function runServeCommand(
         );
       }
       const managedTunnelUrl = process.env.AUVRYNT_MANAGED_TUNNEL_URL;
-      if (localConfig.tunnelProvider === "custom" && (process.platform === "win32" || !localConfig.cloudflareTunnelToken)) {
-        process.env.AUVRYNT_PUBLIC_BASE_URL = localConfig.publicBaseUrl;
-      } else if (managedTunnelUrl) {
+      if (managedTunnelUrl) {
         process.env.AUVRYNT_PUBLIC_BASE_URL = managedTunnelUrl;
+      } else if (localConfig.tunnelProvider === "custom"
+        && ((process.platform === "win32" && !localConfig.cloudflareTokenManaged) || !localConfig.cloudflareTunnelToken)) {
+        process.env.AUVRYNT_PUBLIC_BASE_URL = localConfig.publicBaseUrl;
       } else {
         tunnel = await startTunnel(localConfig.tunnelProvider, localConfig.port, {
           ngrokAuthtoken: localConfig.ngrokAuthtoken,
@@ -82,11 +93,33 @@ export async function runServeCommand(
   }
 }
 
+export function resolveStartLaunchRoot(
+  args: string[],
+  config: { workspaceRoot?: string; allowedRoots?: string[] },
+  cwd: string,
+): string {
+  return args.length === 0 ? resolveSavedWorkspaceRoot(config, cwd) : resolve(cwd);
+}
+
 function setDirectoryScopedRoot(): string {
   const launchRoot = resolve(process.cwd());
   process.env.AUVRYNT_ALLOWED_ROOTS = launchRoot;
   process.env.AUVRYNT_WORKTREE_ROOT = launchRoot;
   return launchRoot;
+}
+
+function setPersistedDirectoryScope(allowedRoots: string[] | undefined, launchRoot: string): void {
+  process.env.AUVRYNT_ALLOWED_ROOTS = (allowedRoots && allowedRoots.length > 0
+    ? allowedRoots
+    : [launchRoot]).join(",");
+  process.env.AUVRYNT_WORKTREE_ROOT = launchRoot;
+}
+
+function requireSavedWorkspaceRoot(root: string): string {
+  if (!existsSync(root)) {
+    throw new Error(`Saved workspace directory does not exist: ${root}. Change it in the dashboard or run auvrynt change from the desired directory.`);
+  }
+  return root;
 }
 
 function exposeConfiguredGodotExecutables(
